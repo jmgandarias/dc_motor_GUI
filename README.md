@@ -1,4 +1,4 @@
-# dDC Motor GUI
+# DC Motor GUI
 
 Repo for the DC motor GUI
 

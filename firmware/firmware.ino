@@ -10,6 +10,7 @@ web: www.jmgandarias.com
 email: jmgandarias@uma.es
 
 */
+#include <M5Unified.h>
 
 #define ENCODER_A 19 // pin connected to encoder channel A
 #define ENCODER_B 27 // pin connected to encoder channel B
@@ -87,6 +88,7 @@ void IRAM_ATTR timerInterrupt()
 
 void setup()
 {
+    M5.begin();
     Serial.begin(500000); // high baud for fast data logging
 
     pinMode(LED_PIN, OUTPUT);
