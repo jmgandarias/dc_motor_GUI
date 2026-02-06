@@ -11,7 +11,7 @@ email: jmgandarias@uma.es
 
 */
 
-#define ENCODER_A 26 // pin connected to encoder channel A
+#define ENCODER_A 19 // pin connected to encoder channel A
 #define ENCODER_B 27 // pin connected to encoder channel B
 
 #define PWM_CCW_PIN 25 // PWM pin for clockwise drive
