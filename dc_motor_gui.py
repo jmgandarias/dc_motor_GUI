@@ -41,6 +41,7 @@ import sys
 import time
 import threading
 import queue
+import json
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import serial
@@ -72,8 +73,21 @@ class ESP32StepGUI(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Serial Port Data Collection (CSV)")
+        self.title("DC Motor GUI")
         self.geometry("720x576")
+
+        # Set custom icon if available (try .ico first for Windows, then .png)
+        try:
+            icon_ico = os.path.join("images", "icon.ico")
+            if os.path.exists(icon_ico):
+                self.iconbitmap(icon_ico)
+            else:
+                icon_png = os.path.join("images", "icon.png")
+                if os.path.exists(icon_png):
+                    icon = tk.PhotoImage(file=icon_png)
+                    self.iconphoto(True, icon)
+        except Exception:
+            pass  # If icon fails to load, use default
 
         # Serial and thread state
         # self.ser: an instance of serial.Serial when the port is open, else None
@@ -166,11 +180,58 @@ class ESP32StepGUI(tk.Tk):
         default_name = datetime.now().strftime("esp32_step_%Y%m%d_%H%M%S.csv")
         docs = os.path.expanduser("~/Documents")
         default_dir = docs if os.path.isdir(docs) else os.getcwd()
-        self.file_entry.insert(0, os.path.join(default_dir, default_name))
+        default_path = os.path.normpath(os.path.join(default_dir, default_name))
+        self.file_entry.insert(0, default_path)
 
         # Browse button already wired to _browse_outfile()
         browse_btn = ttk.Button(out, text="Browse…", command=self._browse_outfile)
         browse_btn.grid(row=0, column=2, **pad)
+
+        # --- Configuration frame ---
+        config_frame = ttk.LabelFrame(self, text="Configuration")
+        config_frame.pack(fill="x", **pad)
+
+        ttk.Label(config_frame, text="Control Mode:").grid(row=0, column=0, sticky="w", **pad)
+        self.control_mode_cmb = ttk.Combobox(
+            config_frame,
+            width=20,
+            state="readonly",
+            values=["open-loop", "position", "velocity"]
+        )
+        self.control_mode_cmb.set("open-loop")
+        self.control_mode_cmb.grid(row=0, column=1, sticky="w", **pad)
+
+        # PID gains on same row as Control Mode
+        ttk.Label(config_frame, text="Kp:").grid(row=0, column=2, sticky="w", **pad)
+        self.kp_entry = ttk.Entry(config_frame, width=10)
+        self.kp_entry.insert(0, "1.0")
+        self.kp_entry.grid(row=0, column=3, sticky="w", **pad)
+
+        ttk.Label(config_frame, text="Ki:").grid(row=0, column=4, sticky="w", **pad)
+        self.ki_entry = ttk.Entry(config_frame, width=10)
+        self.ki_entry.insert(0, "0.0")
+        self.ki_entry.grid(row=0, column=5, sticky="w", **pad)
+
+        ttk.Label(config_frame, text="Kd:").grid(row=0, column=6, sticky="w", **pad)
+        self.kd_entry = ttk.Entry(config_frame, width=10)
+        self.kd_entry.insert(0, "0.0")
+        self.kd_entry.grid(row=0, column=7, sticky="w", **pad)
+
+        ttk.Label(config_frame, text="Input Signal:").grid(row=1, column=0, sticky="w", **pad)
+        self.input_signal_cmb = ttk.Combobox(
+            config_frame,
+            width=20,
+            state="readonly",
+            values=["step", "sine", "square", "manual"]
+        )
+        self.input_signal_cmb.set("step")
+        self.input_signal_cmb.grid(row=1, column=1, sticky="w", **pad)
+
+        # Button to send config (updates file and sends to ESP32)
+        self.send_config_btn = ttk.Button(
+            config_frame, text="Send Config", command=self._on_send_config, state="disabled"
+        )
+        self.send_config_btn.grid(row=1, column=2, columnspan=2, sticky="w", **pad)
 
         # Controls frame
         ctrl = ttk.LabelFrame(self, text="Controls")
@@ -325,6 +386,89 @@ class ESP32StepGUI(tk.Tk):
             saved = self._save_csv()
         self.status_var.set("Saved and ready." if saved else "Ready.")
 
+    def _on_send_config(self):
+        """Update config.json file and send the configuration to the ESP32 via serial."""
+        if not (self.ser and self.ser.is_open):
+            messagebox.showwarning("Not connected", "Connect first.")
+            return
+        
+        config_path = os.path.join("config", "config.json")
+        
+        try:
+            # Get values from comboboxes and entries
+            control_mode = self.control_mode_cmb.get()
+            input_signal = self.input_signal_cmb.get()
+            
+            # Parse PID gains as floats
+            try:
+                kp = float(self.kp_entry.get())
+                ki = float(self.ki_entry.get())
+                kd = float(self.kd_entry.get())
+            except ValueError:
+                messagebox.showerror("Invalid Input", "Kp, Ki, and Kd must be valid numbers.")
+                return
+            
+            # Validate maximum 5 decimals
+            def validate_decimals(value_str):
+                """Check if a number string has more than 5 decimals."""
+                if '.' in value_str:
+                    decimals = len(value_str.split('.')[1])
+                    return decimals <= 5
+                return True
+            
+            kp_str = self.kp_entry.get().strip()
+            ki_str = self.ki_entry.get().strip()
+            kd_str = self.kd_entry.get().strip()
+            
+            if not validate_decimals(kp_str):
+                messagebox.showerror("Invalid Format", "Kp can have maximum 5 decimal places.")
+                return
+            if not validate_decimals(ki_str):
+                messagebox.showerror("Invalid Format", "Ki can have maximum 5 decimal places.")
+                return
+            if not validate_decimals(kd_str):
+                messagebox.showerror("Invalid Format", "Kd can have maximum 5 decimal places.")
+                return
+            
+            # Validate PID gains are within acceptable ranges
+            if kp < 0 or kp > 30:
+                messagebox.showerror("Invalid Range", "Kp must be between 0 and 30.")
+                return
+            if ki < 0 or ki > 10:
+                messagebox.showerror("Invalid Range", "Ki must be between 0 and 10.")
+                return
+            if kd < 0 or kd > 10:
+                messagebox.showerror("Invalid Range", "Kd must be between 0 and 10.")
+                return
+            
+            # Create JSON object
+            config_obj = {
+                "control_mode": control_mode,
+                "input_signal": input_signal,
+                "Kp": kp,
+                "Ki": ki,
+                "Kd": kd
+            }
+            
+            # First, update the config.json file
+            os.makedirs("config", exist_ok=True)
+            with open(config_path, 'w') as f:
+                json.dump(config_obj, f, indent=4)
+            self._log(f"Config file updated: {config_path}")
+            
+            # Then, send to ESP32 as compact JSON (single line, no whitespace)
+            config_data = json.dumps(config_obj, separators=(',', ':'))
+            self.ser.write(config_data.encode('utf-8'))
+            self.ser.write(b'\n')  # Add newline to signal end of JSON
+            self.ser.flush()
+            
+            self._log(f"Config sent to ESP32: {config_data}")
+            self.status_var.set("Config updated and sent.")
+            messagebox.showinfo("Success", "Configuration file updated and sent to ESP32!")
+        except Exception as e:
+            messagebox.showerror("Send Error", f"Failed to send config:\n{e}")
+            self._log(f"Error sending config: {e}")
+
     def _on_exit(self):
         """Gracefully exit the application: stop thread, close serial and destroy window."""
         # Signal reader thread to stop and wait briefly for it
@@ -364,6 +508,7 @@ class ESP32StepGUI(tk.Tk):
         self.disconnect_btn["state"] = "normal"
         self.start_btn["state"] = "normal"
         self.stop_btn["state"] = "disabled"
+        self.send_config_btn["state"] = "normal"
 
     def _on_disconnect(self):
         """Stop the reader thread, close the port, and update the UI."""
@@ -385,6 +530,7 @@ class ESP32StepGUI(tk.Tk):
         self.disconnect_btn["state"] = "disabled"
         self.start_btn["state"] = "disabled"
         self.stop_btn["state"] = "disabled"
+        self.send_config_btn["state"] = "disabled"
 
     # -------------------- Reader & parsing --------------------
     def _reader_loop(self):

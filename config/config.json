@@ -1,0 +1,7 @@
+{
+    "control_mode": "open-loop",
+    "input_signal": "step",
+    "Kp": 15.456,
+    "Ki": 0.0,
+    "Kd": 0.0
+}

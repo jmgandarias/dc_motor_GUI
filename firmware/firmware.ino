@@ -1,7 +1,7 @@
 /*
 
-Send a PWM ramp to the motor and get the current angular position and velocity of the motor (DC6V210RPM - Reducer 20:1).
-The data is send/received through serial port.
+Low-level firmware for encoder reading and PWM control of a motor, with timer-based sampling and
+serial communication for experiment control and data logging.
 
 This script uses the 3.X version of the Arduino ESP32 core.
 
@@ -11,6 +11,8 @@ email: jmgandarias@uma.es
 
 */
 #include <M5Unified.h>
+#include <M5GFX.h>
+#include <ArduinoJson.h>
 
 #define ENCODER_A 19 // pin connected to encoder channel A
 #define ENCODER_B 27 // pin connected to encoder channel B
@@ -19,6 +21,26 @@ email: jmgandarias@uma.es
 #define PWM_CW_PIN 26  // PWM pin for counter-clockwise drive
 
 #define LED_PIN 13 // activity indicator LED
+
+// Touch details struct for reading touch input
+m5::touch_detail_t touchDetail;
+static int32_t w;
+static int32_t h;
+
+// Button object for reset button on LCD
+LGFX_Button reset_button;
+const int BUTTON_WIDTH = 80;
+const int BUTTON_HEIGHT = 40;
+const int BUTTON_OFFSET = 5;
+
+// JSON buffer size for configuration parsing
+static const size_t MAX_LINE = 1024;
+String lineBuffer;
+String control_mode = "open-loop";
+String input_signal = "step";
+float Kp = 1.0;
+float Ki = 0.0;
+float Kd = 0.0;
 
 // timer variables
 hw_timer_t *timer = NULL;              // hardware timer handle
@@ -49,8 +71,8 @@ int vel_ma_count = 0;
 float vel_ma_sum = 0.0f;
 
 // Experiment control
-int experiment_time = pwm_max * 10; // duration of experiment in milliseconds
-bool start_experiment = false;      // true when experiment is running
+int experiment_time = 15000;   // duration of experiment in milliseconds
+bool start_experiment = false; // true when experiment is running
 uint32_t t_ini = 0;
 
 // Encoder ISRs --------------------------------------------------------------
@@ -86,6 +108,32 @@ void IRAM_ATTR timerInterrupt()
     timer_activated = true;
 }
 
+// M5 LCD setup function
+void M5DisplaySetup()
+{
+    M5.Lcd.fillScreen(BLACK);
+    M5.Display.setTextSize(2);
+    M5.Display.setTextColor(WHITE, BLACK);
+    M5.Display.setCursor(100, 10);
+    M5.Display.println("DC Motor GUI");
+
+    M5.Display.setTextSize(2);
+    M5.Display.setCursor(0, 60);
+    M5.Display.println("Control_mode: " + control_mode);
+    M5.Display.setCursor(0, 90);
+    M5.Display.println("Input_signal: " + input_signal);
+    M5.Display.setCursor(0, 120);
+    M5.Display.println("Kp: " + String(Kp, 5));
+    M5.Display.println("Ki: " + String(Ki, 5));
+    M5.Display.println("Kd: " + String(Kd, 5));
+
+    // Initialize reset button in bottom-right corner of the screen
+    w = M5.Lcd.width();
+    h = M5.Lcd.height();
+    reset_button.initButton(&M5.Lcd, w - BUTTON_WIDTH - BUTTON_OFFSET, h - BUTTON_HEIGHT - BUTTON_OFFSET, BUTTON_WIDTH, BUTTON_HEIGHT, TFT_WHITE, TFT_YELLOW, TFT_BLACK, "Reset", 2, 2);
+    reset_button.drawButton();
+}
+
 void setup()
 {
     M5.begin();
@@ -93,6 +141,9 @@ void setup()
 
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
+
+    // LCD setup - Display DC Motor GUI title and reset button instructions
+    M5DisplaySetup();
 
     // Configure PWM using ledcAttach (3.X core version)
     ledcAttach(PWM_CW_PIN, frequency, resolution);
@@ -119,6 +170,96 @@ void setup()
 
 void loop()
 {
+    // Handle M5 button/touch events
+    M5.update();
+
+    // Read serial input for configuration JSON (non-blocking)
+    while (Serial.available())
+    {
+        char c = Serial.read();
+
+        if (c == '\n')
+        {
+            // End of line: try to parse JSON
+            if (lineBuffer.length() > 0)
+            {
+                DynamicJsonDocument doc(512);
+                DeserializationError err = deserializeJson(doc, lineBuffer);
+
+                if (err)
+                {
+                    Serial.print("JSON Error: ");
+                    Serial.println(err.c_str());
+                }
+                else
+                {
+                    // Extract the fields using const char* first for strings
+                    const char* cm = doc["control_mode"];
+                    const char* is = doc["input_signal"];
+                    
+                    if (cm != nullptr) {
+                        control_mode = String(cm);
+                    }
+                    if (is != nullptr) {
+                        input_signal = String(is);
+                    }
+                    
+                    // Extract PID gains (floats)
+                    if (doc.containsKey("Kp")) {
+                        Kp = doc["Kp"].as<float>();
+                    }
+                    if (doc.containsKey("Ki")) {
+                        Ki = doc["Ki"].as<float>();
+                    }
+                    if (doc.containsKey("Kd")) {
+                        Kd = doc["Kd"].as<float>();
+                    }
+
+                    Serial.println("Config received:");
+                    Serial.print("  control_mode: ");
+                    Serial.println(control_mode);
+                    Serial.print("  input_signal: ");
+                    Serial.println(input_signal);
+                    Serial.print("  Kp: ");
+                    Serial.println(Kp, 2);
+                    Serial.print("  Ki: ");
+                    Serial.println(Ki, 2);
+                    Serial.print("  Kd: ");
+                    Serial.println(Kd, 2);
+
+                    // Validate values and set defaults if invalid
+                    if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")
+                    {
+                        Serial.println("Invalid control_mode, using default: open-loop");
+                        control_mode = "open-loop"; // default
+                    }
+                    if (input_signal != "step" && input_signal != "sine" && input_signal != "square" && input_signal != "manual")
+                    {
+                        Serial.println("Invalid input_signal, using default: step");
+                        input_signal = "step"; // default
+                    }
+                    M5DisplaySetup();
+                }
+                lineBuffer = ""; // clear for next line
+            }
+        }
+        else
+        {
+            lineBuffer += c; // keep accumulating
+        }
+    }
+
+    // Check for touch input in reset button area
+    touchDetail = M5.Touch.getDetail();
+    if (touchDetail.isReleased())
+    {
+        if (reset_button.contains(touchDetail.x, touchDetail.y))
+        {
+            // Perform hardware reset of the microcontroller
+            ESP.restart();
+        }
+    }
+
     // Wait for serial command to start the experiment
     if (!start_experiment)
     {
