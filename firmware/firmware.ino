@@ -112,25 +112,27 @@ void IRAM_ATTR timerInterrupt()
 void M5DisplaySetup()
 {
     M5.Lcd.fillScreen(BLACK);
-    M5.Display.setTextSize(2);
+    M5.Display.setTextSize(2.5);
     M5.Display.setTextColor(WHITE, BLACK);
-    M5.Display.setCursor(100, 10);
+    M5.Display.setCursor(80, 10);
     M5.Display.println("DC Motor GUI");
 
     M5.Display.setTextSize(2);
     M5.Display.setCursor(0, 60);
-    M5.Display.println("Control_mode: " + control_mode);
+    M5.Display.println("Control mode: " + control_mode);
     M5.Display.setCursor(0, 90);
-    M5.Display.println("Input_signal: " + input_signal);
-    M5.Display.setCursor(0, 120);
+    M5.Display.println("Input signal: " + input_signal);
+    M5.Display.setCursor(0, 130);
     M5.Display.println("Kp: " + String(Kp, 5));
+    M5.Display.setCursor(0, 160);
     M5.Display.println("Ki: " + String(Ki, 5));
+    M5.Display.setCursor(0, 190);
     M5.Display.println("Kd: " + String(Kd, 5));
 
     // Initialize reset button in bottom-right corner of the screen
     w = M5.Lcd.width();
     h = M5.Lcd.height();
-    reset_button.initButton(&M5.Lcd, w - BUTTON_WIDTH - BUTTON_OFFSET, h - BUTTON_HEIGHT - BUTTON_OFFSET, BUTTON_WIDTH, BUTTON_HEIGHT, TFT_WHITE, TFT_YELLOW, TFT_BLACK, "Reset", 2, 2);
+    reset_button.initButton(&M5.Lcd, w - BUTTON_WIDTH/2 - BUTTON_OFFSET, h - BUTTON_HEIGHT/2 - BUTTON_OFFSET, BUTTON_WIDTH, BUTTON_HEIGHT, TFT_WHITE, TFT_YELLOW, TFT_BLACK, "Reset", 2, 2);
     reset_button.drawButton();
 }
 
