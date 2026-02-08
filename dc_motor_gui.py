@@ -57,9 +57,10 @@ DEFAULT_BAUD = 500000  # Must match Serial.begin() on ESP32
 READ_THREAD_SLEEP_S = 0.01  # Sleep between polls in the reader thread
 PLOT_UPDATE_MS = 100  # Plot refresh interval
 MAX_PLOT_POINTS = 5000  # Limit points for performance
+MAX_LOG_LINES_PER_TICK = 200  # Limit log processing per UI tick
 
 
-class ESP32StepGUI(tk.Tk):
+class ControlGUI(tk.Tk):
     """Main GUI application for collecting experiment data from an ESP32.
 
     Responsibilities:
@@ -105,14 +106,42 @@ class ESP32StepGUI(tk.Tk):
         # Access to this list must be guarded by data_lock.
         self.data_rows = []
         self.data_lock = threading.Lock()
+        self.last_plot_len = 0
+
+        # Initialize config file with default values
+        self._initialize_config()
 
         # Build UI and start periodic queue processing on the main loop
         self._build_ui()
         self.after(100, self._process_lines_queue)
 
+        # Ensure closing the window also closes the serial port
+        self.protocol("WM_DELETE_WINDOW", self._on_exit)
+
         # Tracks whether the device has announced "READY" (used to avoid sending a start
         # byte too early after connecting / resetting the ESP32).
         self.ready_seen = False
+
+    # -------------------- Initialization --------------------
+    def _initialize_config(self):
+        """Initialize config.json file with default values at startup."""
+        config_path = os.path.join("config", "config.json")
+        default_config = {
+            "control_mode": "open-loop",
+            "input_signal": "step",
+            "Kp": 1.0,
+            "Ki": 0.0,
+            "Kd": 0.0,
+            "experiment_duration": 10.0,
+            "sampling_rate": 0.01
+        }
+        
+        try:
+            os.makedirs("config", exist_ok=True)
+            with open(config_path, 'w') as f:
+                json.dump(default_config, f, indent=4)
+        except Exception as e:
+            print(f"Warning: Could not initialize config file: {e}")
 
     # -------------------- UI --------------------
     def _build_ui(self):
@@ -222,16 +251,27 @@ class ESP32StepGUI(tk.Tk):
             config_frame,
             width=20,
             state="readonly",
-            values=["step", "sine", "square", "manual"]
+            values=["step", "sine", "square", "ramp", "manual"]
         )
         self.input_signal_cmb.set("step")
         self.input_signal_cmb.grid(row=1, column=1, sticky="w", **pad)
+
+        # Experiment duration and sampling rate on row 2
+        ttk.Label(config_frame, text="Exp Duration (s):").grid(row=2, column=0, sticky="w", **pad)
+        self.exp_duration_entry = ttk.Entry(config_frame, width=10)
+        self.exp_duration_entry.insert(0, "10.0")
+        self.exp_duration_entry.grid(row=2, column=1, sticky="w", **pad)
+
+        ttk.Label(config_frame, text="Sampling Rate (s):").grid(row=2, column=2, sticky="w", **pad)
+        self.sampling_rate_entry = ttk.Entry(config_frame, width=10)
+        self.sampling_rate_entry.insert(0, "0.01")
+        self.sampling_rate_entry.grid(row=2, column=3, sticky="w", **pad)
 
         # Button to send config (updates file and sends to ESP32)
         self.send_config_btn = ttk.Button(
             config_frame, text="Send Config", command=self._on_send_config, state="disabled"
         )
-        self.send_config_btn.grid(row=1, column=2, columnspan=2, sticky="w", **pad)
+        self.send_config_btn.grid(row=2, column=5, columnspan=2, sticky="w", **pad)
 
         # Controls frame
         ctrl = ttk.LabelFrame(self, text="Controls")
@@ -244,12 +284,14 @@ class ESP32StepGUI(tk.Tk):
         self.start_btn.grid(row=0, column=0, **pad)
 
         self.stop_btn = ttk.Button(
-            ctrl, text="Stop & Save", command=self._on_stop_and_save, state="disabled"
+            ctrl, text="Save", command=self._on_save, state="disabled"
         )
         self.stop_btn.grid(row=0, column=1, **pad)
 
-        self.exit_btn = ttk.Button(ctrl, text="Exit", command=self._on_exit)
-        self.exit_btn.grid(row=0, column=2, **pad)
+        self.stop_no_save_btn = ttk.Button(
+            ctrl, text="Stop", command=self._on_stop_without_save, state="disabled"
+        )
+        self.stop_no_save_btn.grid(row=0, column=2, **pad)
 
         # Status text
         self.status_var = tk.StringVar(value="Idle")
@@ -356,35 +398,60 @@ class ESP32StepGUI(tk.Tk):
             self._send_start_trigger()
 
     def _send_start_trigger(self):
-        """Clear prior data, flip UI into collecting state, and send the '1' byte."""
+        """Clear prior data, flip UI into collecting state, and send 'START' command."""
         with self.data_lock:
             self.data_rows = []
         self.collecting = True
         self.start_btn["state"] = "disabled"
         self.stop_btn["state"] = "normal"
+        self.stop_no_save_btn["state"] = "normal"
+        self.send_config_btn["state"] = "disabled"
         self.status_var.set("Experiment running…")
         try:
             # Clear buffers to avoid mixing stale lines with the new run
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-            # Protocol: send single ASCII '1' to instruct the ESP32 to start recording
-            self.ser.write(b"1")
+            # Protocol: send 'START' command to instruct the ESP32 to start recording
+            self.ser.write(b"START\n")
             self.ser.flush()
-            self._log("Sent start trigger: '1'")
+            self._log("Sent start trigger: 'START'")
         except Exception as e:
-            messagebox.showerror("Serial error", f"Failed to write start byte:\n{e}")
+            messagebox.showerror("Serial error", f"Failed to write start command:\n{e}")
             # Attempt a graceful stop without saving when the write fails
             self._on_stop_and_save(force_save=False)
 
     def _on_stop_and_save(self, force_save=True):
         """Stop collection and, unless force_save==False, save the collected rows to CSV."""
+        # Send END command to ESP32 to stop the experiment
+        if self.ser and self.ser.is_open:
+            try:
+                self.ser.write(b"END\n")
+                self.ser.flush()
+                self._log("Sent stop command: 'END'")
+            except Exception as e:
+                messagebox.showerror("Serial error", f"Failed to write stop command:\n{e}")
+        
         self.collecting = False
-        self.stop_btn["state"] = "disabled"
+        self.stop_btn["state"] = "normal"
+        self.stop_no_save_btn["state"] = "disabled"
         self.start_btn["state"] = "normal"
+        # Re-enable Send Config button when experiment stops
+        if self.ser and self.ser.is_open:
+            self.send_config_btn["state"] = "normal"
         saved = False
         if force_save:
             saved = self._save_csv()
         self.status_var.set("Saved and ready." if saved else "Ready.")
+
+    def _on_save(self):
+        """Save current data without stopping the experiment."""
+        saved = self._save_csv()
+        if saved:
+            self.status_var.set("Saved.")
+
+    def _on_stop_without_save(self):
+        """Stop collection without saving the data."""
+        self._on_stop_and_save(force_save=False)
 
     def _on_send_config(self):
         """Update config.json file and send the configuration to the ESP32 via serial."""
@@ -404,8 +471,10 @@ class ESP32StepGUI(tk.Tk):
                 kp = float(self.kp_entry.get())
                 ki = float(self.ki_entry.get())
                 kd = float(self.kd_entry.get())
+                exp_duration = float(self.exp_duration_entry.get())
+                sampling_rate = float(self.sampling_rate_entry.get())
             except ValueError:
-                messagebox.showerror("Invalid Input", "Kp, Ki, and Kd must be valid numbers.")
+                messagebox.showerror("Invalid Input", "Kp, Ki, Kd, Exp Duration, and Sampling Rate must be valid numbers.")
                 return
             
             # Validate maximum 5 decimals
@@ -441,13 +510,23 @@ class ESP32StepGUI(tk.Tk):
                 messagebox.showerror("Invalid Range", "Kd must be between 0 and 10.")
                 return
             
+            # Validate experiment duration and sampling rate ranges
+            if exp_duration < 0 or exp_duration > 3e38:
+                messagebox.showerror("Invalid Range", "Experiment Duration must be between 0 and 3e38 seconds.")
+                return
+            if sampling_rate < 0.001 or sampling_rate > 1000:
+                messagebox.showerror("Invalid Range", "Sampling Rate must be between 0.001 and 1000 seconds.")
+                return
+            
             # Create JSON object
             config_obj = {
                 "control_mode": control_mode,
                 "input_signal": input_signal,
                 "Kp": kp,
                 "Ki": ki,
-                "Kd": kd
+                "Kd": kd,
+                "experiment_duration": exp_duration,
+                "sampling_rate": sampling_rate
             }
             
             # First, update the config.json file
@@ -508,6 +587,7 @@ class ESP32StepGUI(tk.Tk):
         self.disconnect_btn["state"] = "normal"
         self.start_btn["state"] = "normal"
         self.stop_btn["state"] = "disabled"
+        self.stop_no_save_btn["state"] = "disabled"
         self.send_config_btn["state"] = "normal"
 
     def _on_disconnect(self):
@@ -530,6 +610,7 @@ class ESP32StepGUI(tk.Tk):
         self.disconnect_btn["state"] = "disabled"
         self.start_btn["state"] = "disabled"
         self.stop_btn["state"] = "disabled"
+        self.stop_no_save_btn["state"] = "disabled"
         self.send_config_btn["state"] = "disabled"
 
     # -------------------- Reader & parsing --------------------
@@ -605,7 +686,12 @@ class ESP32StepGUI(tk.Tk):
         # If ESP32 signals end of experiment with "END", stop & save on main thread
         if line == "END":
             # Use after() to ensure UI actions run in main thread
-            self.after(0, lambda: self._on_stop_and_save(force_save=True))
+            def on_end():
+                self._on_stop_and_save(force_save=True)
+                # Re-enable Send Config button after experiment ends
+                if self.ser and self.ser.is_open:
+                    self.send_config_btn["state"] = "normal"
+            self.after(0, on_end)
             return
 
         # If not currently collecting, ignore parsed data
@@ -658,19 +744,52 @@ class ESP32StepGUI(tk.Tk):
         if not out_path.lower().endswith(".csv"):
             out_path += ".csv"
 
-        out_dir = os.path.dirname(out_path) or "."
-        os.makedirs(out_dir, exist_ok=True)
+        # Expand user home directory and normalize path
+        out_path = os.path.normpath(os.path.expanduser(out_path))
+        out_dir = os.path.dirname(out_path)
+        
+        # If dirname is empty, use current directory
+        if not out_dir:
+            out_dir = os.getcwd()
+        
+        # Validate the final path
+        if not out_path or len(out_path) == 0:
+            messagebox.showerror("Save error", "Invalid file path.")
+            return False
+        
+        self._log(f"Save path: {out_path}")
+        self._log(f"Save directory: {out_dir}")
+        
+        # Create directory if it doesn't exist
+        try:
+            os.makedirs(out_dir, exist_ok=True)
+            self._log(f"Directory created/verified: {out_dir}")
+        except OSError as e:
+            error_msg = e.strerror or "Unable to create folder"
+            self._log(f"Directory creation failed: {out_dir} - {error_msg}")
+            messagebox.showerror(
+                "Save error",
+                f"Cannot create directory:\n{out_dir}\n\nError: {error_msg}",
+            )
+            return False
 
         try:
+            self._log(f"Attempting to write file: {out_path}")
             # Write header + data rows
             with open(out_path, mode="w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(["PWM", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "time_ms"])
                 writer.writerows(rows)
-            self._log(f"Saved {len(rows)} rows to:\n{out_path}")
+            self._log(f"Saved {len(rows)} rows to: {out_path}")
+            messagebox.showinfo("Success", f"Data saved successfully to:\n{out_path}")
             return True
         except Exception as e:
-            messagebox.showerror("Save error", f"Failed to save CSV:\n{e}")
+            error_msg = str(e)
+            self._log(f"File write failed: {error_msg}")
+            messagebox.showerror(
+                "Save error",
+                f"Cannot write to file:\n{out_path}\n\nError: {error_msg}",
+            )
             return False
 
     # -------------------- UI helpers --------------------
@@ -698,15 +817,17 @@ class ESP32StepGUI(tk.Tk):
         This keeps all Tkinter UI updates on the main thread while allowing the
         reader thread to run without interacting with Tk directly.
         """
+        drained = 0
         try:
-            while True:
+            while drained < MAX_LOG_LINES_PER_TICK:
                 kind, payload = self.lines_queue.get_nowait()
                 if kind == "log":
                     self._log(payload)
+                drained += 1
         except queue.Empty:
             pass
         # Re-schedule
-        self.after(100, self._process_lines_queue)
+        self.after(10 if drained >= MAX_LOG_LINES_PER_TICK else 100, self._process_lines_queue)
 
     def _log(self, message: str):
         """Append a line to the read-only log text widget (must be called from main thread)."""
@@ -745,9 +866,9 @@ class ESP32StepGUI(tk.Tk):
         self.ax_pos.grid(True, linestyle=":", alpha=0.6)
         self.ax_vel.grid(True, linestyle=":", alpha=0.6)
 
-        (self.line_pos,) = self.ax_pos.plot([], [], color="tab:blue", label="pos")
-        (self.line_vel,) = self.ax_vel.plot([], [], color="tab:orange", label="vel")
-        (self.line_vel_filt,) = self.ax_vel.plot([], [], color="tab:green", label="vel_filt")
+        (self.line_pos,) = self.ax_pos.plot([], [], color="tab:blue", label="pos", linewidth=1.5, antialiased=True)
+        (self.line_vel,) = self.ax_vel.plot([], [], color="tab:orange", label="vel", linewidth=1.5, antialiased=True)
+        (self.line_vel_filt,) = self.ax_vel.plot([], [], color="tab:green", label="vel_filt", linewidth=1.5, antialiased=True)
         self.ax_pos.legend(loc="upper right")
         self.ax_vel.legend(loc="upper right")
 
@@ -767,6 +888,11 @@ class ESP32StepGUI(tk.Tk):
         # Copy data under lock to avoid blocking reader
         with self.data_lock:
             rows = list(self.data_rows)
+
+        if len(rows) == self.last_plot_len:
+            self.after(PLOT_UPDATE_MS, self._update_plot)
+            return
+        self.last_plot_len = len(rows)
 
         if rows:
             # Each row is [PWM, pos, vel, vel_filtered, tms]
@@ -811,5 +937,5 @@ class ESP32StepGUI(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = ESP32StepGUI()
+    app = ControlGUI()
     app.mainloop()

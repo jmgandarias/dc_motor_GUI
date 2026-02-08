@@ -1,6 +1,6 @@
 /*
 
-Low-level firmware for encoder reading and PWM control of a motor, with timer-based sampling and
+Low-level firmware for encoder reading and PWM control of a motor, with FreeRTOS sampling and
 serial communication for experiment control and data logging.
 
 This script uses the 3.X version of the Arduino ESP32 core.
@@ -40,14 +40,12 @@ static const size_t MAX_LINE = 1024;
 String lineBuffer;
 String control_mode = "open-loop";
 String input_signal = "step";
+float experiment_duration = 10.0;
+float sampling_rate = 0.001;
+
 volatile float Kp = 1.0;
 volatile float Ki = 0.0;
 volatile float Kd = 0.0;
-
-// timer variables
-hw_timer_t *timer = NULL;              // hardware timer handle
-int timer_frequency = 1e6;             // timer frequency in Hz (1 MHz -> 1 tick = 1 us)
-volatile bool timer_activated = false; // flag set by timer ISR each period
 
 // PWM configuration
 const int frequency = 10000;               // PWM frequency in Hz
@@ -59,7 +57,7 @@ volatile int counter = 0;    // running encoder pulse count (signed)
 volatile int last_count = 0; // previous sample's count for delta calculation
 
 // Store the last time
-volatile uint32_t last_time = 0; // last sample time in ms (as returned by timerReadMillis)
+volatile uint32_t last_time = 0; // last sample time in ms (as returned by millis())
 
 // Convert to radians
 const float pulses_per_revolution = 4400.0;                     // encoder pulses per motor revolution
@@ -73,14 +71,20 @@ int vel_ma_count = 0;
 float vel_ma_sum = 0.0f;
 
 // Experiment control
-int experiment_time = 15000;   // duration of experiment in milliseconds
-bool start_experiment = false; // true when experiment is running
+bool experiment_running = false; // true when experiment is running
 uint32_t t_ini = 0;
 
 // Task handles for FreeRTOS tasks
 TaskHandle_t control_task_handle = NULL; // handle for control task
 TaskHandle_t config_task_handle = NULL;  // handle for configuration task
 TaskHandle_t display_task_handle = NULL; // handle for display update task
+
+// Global position, velocity, and PWM variables
+int pwm = 0;               // current PWM value
+float pos = 0.0f;          // current position in radians
+float vel = 0.0f;          // current velocity in rad/s
+float vel_filtered = 0.0f; // filtered velocity
+uint32_t current_time = 0; // current experiment time in ms
 
 // Encoder ISRs --------------------------------------------------------------
 // Simple quadrature decode: compare A and B to increment/decrement counter.
@@ -109,10 +113,26 @@ void IRAM_ATTR ISRENCODER_B()
     }
 }
 
-// Timer ISR: set a flag that main loop polls to run 1ms tasks
-void IRAM_ATTR timerInterrupt()
+void finishExperiment()
 {
-    timer_activated = true;
+    // End of experiment: stop motor and reset state
+    ledcWrite(PWM_CW_PIN, 0);
+    ledcWrite(PWM_CCW_PIN, 0);
+    Serial.println("END");
+    digitalWrite(LED_PIN, LOW);
+    experiment_running = false;
+    last_count = 0;
+    last_time = 0;
+    counter = 0;
+
+    // Reset moving-average filter state
+    vel_ma_idx = 0;
+    vel_ma_count = 0;
+    vel_ma_sum = 0.0f;
+    for (int i = 0; i < VEL_MA_WINDOW; ++i)
+    {
+        vel_ma_buf[i] = 0.0f;
+    }
 }
 
 void setup()
@@ -135,19 +155,11 @@ void setup()
     attachInterrupt(digitalPinToInterrupt(ENCODER_A), ISRENCODER_A, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENCODER_B), ISRENCODER_B, CHANGE);
 
-    // Timer setup
-    // Initializes the timer and sets up a 1ms alarm. Timer is stopped initially.
-    timer = timerBegin(timer_frequency);          // Initializes the timer at timer_frequency
-    timerAttachInterrupt(timer, &timerInterrupt); // Set the ISR associated to the timer
-    // Establish the alarm every 10ms
-    timerAlarm(timer, 1e4, true, 0);
-    timerStop(timer); // The timer will start when the serial command is received
-
     // Create FreeRTOS tasks for control loop, configuration handling, and display updates
     xTaskCreatePinnedToCore(
         ControlLoopTask,      // Task function
         "Control Loop",       // Task description
-        4096,                 // Stack size in words
+        8192,                 // Stack size in words
         NULL,                 // Parameters
         1,                    // Priority
         &control_task_handle, // Task handle
@@ -156,7 +168,7 @@ void setup()
     xTaskCreatePinnedToCore(
         ConfigTask,          // Task function
         "Config Task",       // Task description
-        4096,                // Stack size in words
+        8192,                // Stack size in words
         NULL,                // Parameters
         1,                   // Priority
         &config_task_handle, // Task handle
@@ -165,38 +177,119 @@ void setup()
     xTaskCreatePinnedToCore(
         DisplayTask,          // Task function
         "Display Task",       // Task description
-        4096,                 // Stack size in words
+        8192,                 // Stack size in words
         NULL,                 // Parameters
         1,                    // Priority
         &display_task_handle, // Task handle
-        1);                   // Core ID
+        0);                   // Core ID
 
     Serial.println("READY"); // <-- announce we are alive and ready
 }
 
 void loop()
 {
+    vTaskDelete(NULL);
 }
 
 void ControlLoopTask(void *parameter)
 {
-    const TickType_t xPeriod = pdMS_TO_TICKS(1);    // 1 ms period
-    TickType_t xLastWakeTime = xTaskGetTickCount(); // initialize once
+    const TickType_t xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
+    TickType_t xLastWakeTime = xTaskGetTickCount();                          // initialize once
 
     // This task can be used for more complex control algorithms if needed
     while (true)
     {
-        if (control_mode == "position")
+        // Start experiment when flag is set by ConfigTask upon receiving "START" command
+        if (experiment_running)
         {
-            // Position control logic here
-        }
-        else if (control_mode == "velocity")
-        {
-            // Velocity control logic here
-        }
-        else
-        {
-            // Open-loop control logic here
+            // Compute increments since last sample
+            long delta_pos_ppr = counter - last_count;
+
+            // Get current experiment time in ms
+            current_time = millis() - t_ini;
+
+            // elapsed time in seconds since last sample (used for velocity)
+            float elapsed_time = (current_time - last_time) / 1000.0; // convert ms to seconds
+
+            // convert pulse delta to radians
+            float delta_pos = delta_pos_ppr * radians_per_pulse;
+
+            // Calculate position in radians (total)
+            pos = counter * radians_per_pulse;
+
+            // Calculate velocity (rad/s). Guard against division by zero on first sample.
+            vel = 0.0f;
+            vel_filtered = 0.0f;
+
+            if (elapsed_time > 0.0f)
+            {
+                vel = delta_pos / elapsed_time;
+                // Moving average filter over last VEL_MA_WINDOW velocity samples
+                vel_ma_sum -= vel_ma_buf[vel_ma_idx];
+                vel_ma_buf[vel_ma_idx] = vel;
+                vel_ma_sum += vel;
+                vel_ma_idx = (vel_ma_idx + 1) % VEL_MA_WINDOW;
+                if (vel_ma_count < VEL_MA_WINDOW)
+                {
+                    vel_ma_count++;
+                }
+                vel_filtered = vel_ma_sum / (float)vel_ma_count;
+            }
+
+            if (control_mode == "position")
+            {
+                // Position control logic here
+            }
+            else if (control_mode == "velocity")
+            {
+                // Velocity control logic here
+            }
+            else
+            {
+                if (input_signal == "step")
+                {
+                    static bool step_sent = false;
+                    if ((current_time >= experiment_duration * 1000.0 / 2) && !step_sent)
+                    {
+                        pwm = pwm_max;               // full power step input
+                        ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
+                        ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
+                        step_sent = true;
+                    }else if(current_time > experiment_duration * 1000.0)
+                    {
+                        finishExperiment();
+                    }
+                }
+                else if (input_signal == "sine")
+                {
+                    // Sine wave input logic here
+                }
+                else if (input_signal == "square")
+                {
+                    // Square wave input logic here
+                }
+                else if (input_signal == "ramp")
+                {
+                    if (current_time <= experiment_duration * 1000.0)
+                    {
+                        pwm = current_time / (experiment_duration * 1000.0) * pwm_max; // linear ramp from 0 to max over experiment duration
+                        ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
+                        ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
+                    }
+                    else
+                    {
+                        finishExperiment();
+                    }
+                }
+                else if (input_signal == "manual")
+                {
+                    // Manual input logic here (e.g., read from serial or buttons)
+                }
+            }
+
+            // Update last values for next iteration
+            last_count = counter;
+            last_time = current_time;
         }
 
         vTaskDelayUntil(&xLastWakeTime, xPeriod); // Sleep until next cycle
@@ -205,83 +298,135 @@ void ControlLoopTask(void *parameter)
 
 void ConfigTask(void *parameter)
 {
-    const TickType_t xPeriod = pdMS_TO_TICKS(100);  // 100 ms period
+    const TickType_t xPeriod = pdMS_TO_TICKS(20);   // 10 ms period
     TickType_t xLastWakeTime = xTaskGetTickCount(); // initialize once
 
     // This task can be used for more complex configuration handling if needed
     while (true)
     {
-        // Read serial input for configuration JSON (non-blocking)
+        // Read serial input (non-blocking)
         while (Serial.available())
         {
             char c = Serial.read();
 
             if (c == '\n')
             {
-                // End of line: try to parse JSON
+                // End of line: process the received command/config
                 if (lineBuffer.length() > 0)
                 {
-                    DynamicJsonDocument doc(512);
-                    DeserializationError err = deserializeJson(doc, lineBuffer);
+                    // Remove any trailing whitespace
+                    lineBuffer.trim();
 
-                    if (err)
+                    // Check if it's a START command
+                    if (lineBuffer == "START")
                     {
-                        Serial.print("JSON Error: ");
-                        Serial.println(err.c_str());
+                        if (!experiment_running)
+                        {
+                            experiment_running = true;
+                            t_ini = millis();
+                            Serial.println("STARTED"); // <-- confirm reception
+                            digitalWrite(LED_PIN, HIGH);
+
+                            // Reset moving-average filter state
+                            vel_ma_idx = 0;
+                            vel_ma_count = 0;
+                            vel_ma_sum = 0.0f;
+                            for (int i = 0; i < VEL_MA_WINDOW; ++i)
+                            {
+                                vel_ma_buf[i] = 0.0f;
+                            }
+                        }
                     }
+                    // Check if it's an END command
+                    else if (lineBuffer == "END")
+                    {
+                        if (experiment_running)
+                        {
+                            // End of experiment: stop motor and reset state
+                            ledcWrite(PWM_CW_PIN, 0);
+                            ledcWrite(PWM_CCW_PIN, 0);
+                            Serial.println("END");
+                            digitalWrite(LED_PIN, LOW);
+                            experiment_running = false;
+                            last_count = 0;
+                            last_time = 0;
+                            counter = 0;
+
+                            // Reset moving-average filter state
+                            vel_ma_idx = 0;
+                            vel_ma_count = 0;
+                            vel_ma_sum = 0.0f;
+                            for (int i = 0; i < VEL_MA_WINDOW; ++i)
+                            {
+                                vel_ma_buf[i] = 0.0f;
+                            }
+                        }
+                    }
+                    // Otherwise, try to parse as JSON configuration
                     else
                     {
-                        // Extract the fields using const char* first for strings
-                        const char *cm = doc["control_mode"];
-                        const char *is = doc["input_signal"];
+                        DynamicJsonDocument doc(512);
+                        DeserializationError err = deserializeJson(doc, lineBuffer);
 
-                        if (cm != nullptr)
+                        if (err)
                         {
-                            control_mode = String(cm);
+                            Serial.print("JSON Error: ");
+                            Serial.println(err.c_str());
                         }
-                        if (is != nullptr)
+                        else
                         {
-                            input_signal = String(is);
-                        }
+                            // Extract the fields using const char* first for strings
+                            const char *cm = doc["control_mode"];
+                            const char *is = doc["input_signal"];
 
-                        // Extract PID gains (floats)
-                        if (doc.containsKey("Kp"))
-                        {
-                            Kp = doc["Kp"].as<float>();
-                        }
-                        if (doc.containsKey("Ki"))
-                        {
-                            Ki = doc["Ki"].as<float>();
-                        }
-                        if (doc.containsKey("Kd"))
-                        {
-                            Kd = doc["Kd"].as<float>();
-                        }
+                            if (cm != nullptr)
+                            {
+                                control_mode = String(cm);
+                            }
+                            if (is != nullptr)
+                            {
+                                input_signal = String(is);
+                            }
 
-                        Serial.println("Config received:");
-                        Serial.print("  control_mode: ");
-                        Serial.println(control_mode);
-                        Serial.print("  input_signal: ");
-                        Serial.println(input_signal);
-                        Serial.print("  Kp: ");
-                        Serial.println(Kp, 2);
-                        Serial.print("  Ki: ");
-                        Serial.println(Ki, 2);
-                        Serial.print("  Kd: ");
-                        Serial.println(Kd, 2);
+                            // Extract PID gains (floats)
+                            if (doc.containsKey("Kp"))
+                            {
+                                Kp = doc["Kp"].as<float>();
+                            }
+                            if (doc.containsKey("Ki"))
+                            {
+                                Ki = doc["Ki"].as<float>();
+                            }
+                            if (doc.containsKey("Kd"))
+                            {
+                                Kd = doc["Kd"].as<float>();
+                            }
 
-                        // Validate values and set defaults if invalid
-                        if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")
-                        {
-                            Serial.println("Invalid control_mode, using default: open-loop");
-                            control_mode = "open-loop"; // default
+                            Serial.println("Config received:");
+                            Serial.print("  control_mode: ");
+                            Serial.println(control_mode);
+                            Serial.print("  input_signal: ");
+                            Serial.println(input_signal);
+                            Serial.print("  Kp: ");
+                            Serial.println(Kp, 2);
+                            Serial.print("  Ki: ");
+                            Serial.println(Ki, 2);
+                            Serial.print("  Kd: ");
+                            Serial.println(Kd, 2);
+
+                            // Validate values and set defaults if invalid
+                            if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")
+                            {
+                                Serial.println("Invalid control_mode, using default: open-loop");
+                                control_mode = "open-loop"; // default
+                            }
+                            if (input_signal != "step" && input_signal != "sine" && input_signal != "square" && input_signal != "ramp" && input_signal != "manual")
+                            {
+                                Serial.println("Invalid input_signal, using default: step");
+                                input_signal = "step"; // default
+                            }
+                            update_display = true; // flag to update display with new config
                         }
-                        if (input_signal != "step" && input_signal != "sine" && input_signal != "square" && input_signal != "manual")
-                        {
-                            Serial.println("Invalid input_signal, using default: step");
-                            input_signal = "step"; // default
-                        }
-                        update_display = true; // flag to update display with new config
                     }
                     lineBuffer = ""; // clear for next line
                 }
@@ -292,108 +437,13 @@ void ConfigTask(void *parameter)
             }
         }
 
-         // Wait for serial command to start the experiment
-        if (!start_experiment)
-         {
-             if (Serial.available() > 0)
-             {
-                 // read the incoming byte:
-                 int incoming_byte = Serial.read();
-                 if (incoming_byte == '1')
-                 { // start on character '1'
-                     start_experiment = true;
-                     t_ini = millis();
-                     Serial.println("STARTED"); // <-- confirm reception
-                     digitalWrite(LED_PIN, HIGH);
-                     timerStart(timer);
+        if (experiment_running)
+        {
+            float power = pwm / (float)pwm_max * 100.0f; // convert PWM to percentage of max power
+            Serial.printf("%.2f;%.4f;%.4f;%.4f;%d\n", power, pos, vel, vel_filtered, current_time); // PWM;pos;vel;vel_filtered;time
+        }
 
-                     // Reset moving-average filter state
-                     vel_ma_idx = 0;
-                     vel_ma_count = 0;
-                     vel_ma_sum = 0.0f;
-                     for (int i = 0; i < VEL_MA_WINDOW; ++i)
-                     {
-                         vel_ma_buf[i] = 0.0f;
-                     }
-                 }
-             }
-         }
-
-         // Timer-driven sampling: run when ISR sets timer_activated
-         if (timer_activated)
-         {
-             // Compute increments since last sample
-             long delta_pos_ppr = counter - last_count;
-
-             // Get current experiment time in ms from timer helper
-             uint32_t current_time = millis() - t_ini;
-
-             // elapsed time in seconds since last sample (used for velocity)
-             float elapsed_time = (current_time - last_time) / 1000.0; // convert ms to seconds
-
-             // convert pulse delta to radians
-             float delta_pos = delta_pos_ppr * radians_per_pulse;
-
-             // Calculate position in radians (total)
-             float pos = counter * radians_per_pulse;
-
-             // Calculate velocity (rad/s). Guard against division by zero on first sample.
-             float vel = 0.0f;
-             float vel_filtered = 0.0f;
-             if (elapsed_time > 0.0f)
-             {
-                 vel = delta_pos / elapsed_time;
-                 // Moving average filter over last VEL_MA_WINDOW velocity samples
-                 vel_ma_sum -= vel_ma_buf[vel_ma_idx];
-                 vel_ma_buf[vel_ma_idx] = vel;
-                 vel_ma_sum += vel;
-                 vel_ma_idx = (vel_ma_idx + 1) % VEL_MA_WINDOW;
-                 if (vel_ma_count < VEL_MA_WINDOW)
-                 {
-                     vel_ma_count++;
-                 }
-                 vel_filtered = vel_ma_sum / (float)vel_ma_count;
-             }
-
-             if (current_time <= experiment_time)
-             {
-                 int pwm = current_time / 10;
-                 ledcWrite(PWM_CCW_PIN, pwm);                                                        // writing to CCW (counter-clockwise)
-                 ledcWrite(PWM_CW_PIN, 0);                                                           // stopping CW (clockwise)
-                 Serial.printf("%d;%.4f;%.4f;%.4f;%d\n", pwm, pos, vel, vel_filtered, current_time); // PWM;pos;vel;vel_filtered;time
-             }
-             else
-             {
-                 // End of experiment: stop motor, stop timer and reset state
-                 ledcWrite(PWM_CW_PIN, 0);
-                 ledcWrite(PWM_CCW_PIN, 0);
-                 Serial.println("END");
-                 timerStop(timer);
-                 digitalWrite(LED_PIN, LOW);
-                 start_experiment = false;
-                 last_count = 0;
-                 last_time = 0;
-                 counter = 0;
-
-                 // Reset moving-average filter state
-                 vel_ma_idx = 0;
-                 vel_ma_count = 0;
-                 vel_ma_sum = 0.0f;
-                 for (int i = 0; i < VEL_MA_WINDOW; ++i)
-                 {
-                     vel_ma_buf[i] = 0.0f;
-                 }
-             }
-
-             // clear flag and store last-sample values
-             timer_activated = false;
-
-             // Update last values for next iteration
-             last_count = counter;
-             last_time = current_time;
-         }
-
-         vTaskDelayUntil(&xLastWakeTime, xPeriod); // Sleep until next cycle
+        vTaskDelayUntil(&xLastWakeTime, xPeriod); // Sleep until next cycle
     }
 }
 

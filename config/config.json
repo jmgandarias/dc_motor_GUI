@@ -1,7 +1,9 @@
 {
-    "control_mode": "position",
-    "input_signal": "step",
+    "control_mode": "open-loop",
+    "input_signal": "ramp",
     "Kp": 1.0,
     "Ki": 0.0,
-    "Kd": 0.0
+    "Kd": 0.0,
+    "experiment_duration": 10.0,
+    "sampling_rate": 0.01
 }
