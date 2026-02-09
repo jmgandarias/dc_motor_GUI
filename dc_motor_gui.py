@@ -709,9 +709,10 @@ class ControlGUI(tk.Tk):
 
         # If ESP32 signals end of experiment with "END", stop & save on main thread
         if line == "END":
-            # Use after() to ensure UI actions run in main thread
+            # Use after() to ensure UI actions run in main thread.
+            # Stop collection but DO NOT save automatically; let the user press "Save".
             def on_end():
-                self._on_stop_and_save(force_save=True)
+                self._on_stop_and_save(force_save=False)
                 # Re-enable Send Config button after experiment ends
                 if self.ser and self.ser.is_open:
                     self.send_config_btn["state"] = "normal"
