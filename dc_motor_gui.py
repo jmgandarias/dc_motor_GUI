@@ -406,8 +406,25 @@ class ControlGUI(tk.Tk):
 
     def _send_start_trigger(self):
         """Clear prior data, flip UI into collecting state, and send 'START' command."""
+        # Clear in-memory data buffer
         with self.data_lock:
             self.data_rows = []
+        # Reset plotting state so a new run starts from empty axes
+        self.last_plot_len = 0
+        try:
+            # Clear plotted lines and autoscale so old data doesn't interfere
+            self.line_pos.set_data([], [])
+            self.line_vel.set_data([], [])
+            self.line_vel_filt.set_data([], [])
+            self.ax_pos.relim()
+            self.ax_pos.autoscale_view()
+            self.ax_vel.relim()
+            self.ax_vel.autoscale_view()
+            self.canvas.draw_idle()
+        except Exception:
+            # If plot not yet initialized or other error, ignore and continue
+            pass
+
         self.collecting = True
         self.start_btn["state"] = "disabled"
         self.stop_btn["state"] = "normal"
