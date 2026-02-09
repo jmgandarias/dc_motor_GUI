@@ -129,6 +129,7 @@ class ControlGUI(tk.Tk):
         default_config = {
             "control_mode": "open-loop",
             "input_signal": "step",
+            "ref": 0.0,
             "Kp": 1.0,
             "Ki": 0.0,
             "Kd": 0.0,
@@ -271,6 +272,24 @@ class ControlGUI(tk.Tk):
         )
         self.input_signal_cmb.set("step")
         self.input_signal_cmb.grid(row=1, column=1, sticky="w", **pad)
+
+        # Manual Ref control: label "Ref:" and editable entry to its right.
+        # Hidden unless input_signal == "manual". Range [-100, 100], default 0.00.
+        self.manual_ref_strvar = tk.StringVar(value="0.00")
+        ttk.Label(config_frame, text="Ref:").grid(row=1, column=2, sticky="e", padx=(6, 2))
+        self.manual_ref_entry = ttk.Entry(config_frame, width=8, textvariable=self.manual_ref_strvar, justify="right")
+        # Place entry to the right of label (column 3)
+        self.manual_ref_entry.grid(row=1, column=3, sticky="w", padx=6)
+        # Add "Set Ref" button to send the value over serial when pressed
+        self.set_ref_btn = ttk.Button(config_frame, text="Set Ref", command=self._on_set_ref)
+        self.set_ref_btn.grid(row=1, column=4, sticky="w", padx=6)
+        # Initially hidden
+        self.manual_ref_entry.grid_remove()
+        self.set_ref_btn.grid_remove()
+        # Bind visibility and entry events
+        self.input_signal_cmb.bind("<<ComboboxSelected>>", self._on_input_signal_change)
+        # Validate/format on focus out; do NOT send to serial here.
+        self.manual_ref_entry.bind("<FocusOut>", lambda e: self._on_manual_ref_entry_change())
 
         # Experiment duration and sampling rate on row 2
         ttk.Label(config_frame, text="Exp Duration (s):").grid(row=2, column=0, sticky="w", **pad)
@@ -531,7 +550,11 @@ class ControlGUI(tk.Tk):
             # Get values from comboboxes and entries
             control_mode = self.control_mode_cmb.get()
             input_signal = self.input_signal_cmb.get()
-            
+            # Manual ref (always include in config); rounded to 2 decimals
+            try:
+                ref_val = round(float(self.manual_ref_strvar.get()), 2)
+            except Exception:
+                ref_val = 0.0
             # Parse PID gains as floats
             try:
                 kp = float(self.kp_entry.get())
@@ -588,6 +611,7 @@ class ControlGUI(tk.Tk):
             config_obj = {
                 "control_mode": control_mode,
                 "input_signal": input_signal,
+                "ref": ref_val,
                 "Kp": kp,
                 "Ki": ki,
                 "Kd": kd,
@@ -1032,6 +1056,81 @@ class ControlGUI(tk.Tk):
             self.canvas.draw_idle()
         except Exception:
             pass
+
+    def _on_input_signal_change(self, event=None):
+        """Show manual ref entry when input_signal is 'manual', hide otherwise."""
+        try:
+            if self.input_signal_cmb.get() == "manual":
+                self.manual_ref_entry.grid()
+                self.set_ref_btn.grid()
+                # ensure formatted display
+                try:
+                    v = float(self.manual_ref_strvar.get())
+                    self.manual_ref_strvar.set(f"{v:.2f}")
+                except Exception:
+                    self.manual_ref_strvar.set("0.00")
+            else:
+                self.manual_ref_entry.grid_remove()
+                self.set_ref_btn.grid_remove()
+        except Exception:
+            pass
+
+    def _on_manual_ref_entry_change(self):
+        """Validate typed value, clamp to [-100,100], format to 2 decimals."""
+        try:
+            txt = self.manual_ref_strvar.get().strip()
+            if txt == "":
+                self.manual_ref_strvar.set("0.00")
+                return
+            v = float(txt)
+            if v < -100.0:
+                v = -100.0
+            elif v > 100.0:
+                v = 100.0
+            v = round(v, 2)
+            self.manual_ref_strvar.set(f"{v:.2f}")
+        except Exception:
+            # restore a valid formatted value
+            try:
+                v = float(self.manual_ref_strvar.get())
+                self.manual_ref_strvar.set(f"{v:.2f}")
+            except Exception:
+                self.manual_ref_strvar.set("0.00")
+
+    def _on_set_ref(self):
+        """Handler for Set Ref button: validate value and send 'R<value>\\n' over serial."""
+        try:
+            txt = self.manual_ref_strvar.get().strip()
+            if txt == "":
+                messagebox.showwarning("Missing value", "Please enter a reference value.")
+                return
+            v = float(txt)
+            if v < -100.0:
+                v = -100.0
+            elif v > 100.0:
+                v = 100.0
+            v = round(v, 2)
+            # update displayed/formatted value
+            self.manual_ref_strvar.set(f"{v:.2f}")
+
+            if not (self.ser and getattr(self.ser, "is_open", False)):
+                messagebox.showwarning("Not connected", "Open a serial connection first.")
+                return
+
+            # Compose command (use 'R' prefix as discussed) and send
+            cmd = f"R{v}\n".encode("utf-8")
+            try:
+                self.ser.write(cmd)
+                self.ser.flush()
+                self._log(f"Sent manual ref: R{v:.2f}")
+            except Exception as e:
+                messagebox.showerror("Serial error", f"Failed to send Ref:\n{e}")
+                self._log(f"Error sending Ref: {e}")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Reference must be a valid number.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Unexpected error:\n{e}")
+            self._log(f"Unexpected error sending Ref: {e}")
 
 
 if __name__ == "__main__":

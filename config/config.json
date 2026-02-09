@@ -1,9 +1,10 @@
 {
     "control_mode": "open-loop",
-    "input_signal": "step",
+    "input_signal": "manual",
+    "ref": 50.0,
     "Kp": 1.0,
     "Ki": 0.0,
     "Kd": 0.0,
-    "experiment_duration": 10.0,
+    "experiment_duration": 100.0,
     "sampling_rate": 0.01
 }

@@ -47,6 +47,8 @@ volatile float Kp = 1.0;
 volatile float Ki = 0.0;
 volatile float Kd = 0.0;
 
+float ref = 0.0f; // reference value for control (e.g., target position or velocity)
+
 // PWM configuration
 const int frequency = 10000;               // PWM frequency in Hz
 const int resolution = 11;                 // PWM resolution in bits
@@ -202,28 +204,29 @@ void ControlLoopTask(void *parameter)
         // Start experiment when flag is set by ConfigTask upon receiving "START" command
         if (experiment_running)
         {
-            // Compute increments since last sample
-            long delta_pos_ppr = counter - last_count;
+            // Compute increments since last sample (counts)
+            long delta_counts = counter - last_count;
 
             // Get current experiment time in ms
             current_time = millis() - t_ini;
 
             // elapsed time in seconds since last sample (used for velocity)
-            float elapsed_time = (current_time - last_time) / 1000.0; // convert ms to seconds
-
-            // convert pulse delta to radians
-            float delta_pos = delta_pos_ppr * radians_per_pulse;
+            float elapsed_time = (current_time - last_time) / 1000.0f; // convert ms to seconds
 
             // Calculate position in radians (total)
             pos = counter * radians_per_pulse;
 
-            // Calculate velocity (rad/s). Guard against division by zero on first sample.
+            // Calculate velocity (rad/s) derived from counts:
+            // 1) compute counts per second = delta_counts / elapsed_time
+            // 2) convert to rad/s by multiplying by radians_per_pulse
             vel = 0.0f;
             vel_filtered = 0.0f;
 
-            if (elapsed_time > 0.0f)
+            if (elapsed_time > 1e-6f)
             {
-                vel = delta_pos / elapsed_time;
+                float counts_per_sec = (float)delta_counts / elapsed_time;
+                vel = counts_per_sec * radians_per_pulse;
+
                 // Moving average filter over last VEL_MA_WINDOW velocity samples
                 vel_ma_sum -= vel_ma_buf[vel_ma_idx];
                 vel_ma_buf[vel_ma_idx] = vel;
@@ -255,7 +258,8 @@ void ControlLoopTask(void *parameter)
                         ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
                         ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
                         step_sent = true;
-                    }else if(current_time > experiment_duration * 1000.0)
+                    }
+                    else if (current_time > experiment_duration * 1000.0)
                     {
                         finishExperiment();
                     }
@@ -270,11 +274,12 @@ void ControlLoopTask(void *parameter)
                 }
                 else if (input_signal == "ramp")
                 {
+                    // Manual input logic here (e.g., read from serial or buttons)
                     if (current_time <= experiment_duration * 1000.0)
                     {
                         pwm = current_time / (experiment_duration * 1000.0) * pwm_max; // linear ramp from 0 to max over experiment duration
-                        ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
-                        ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
+                        ledcWrite(PWM_CCW_PIN, pwm);                                   // writing to CCW (counter-clockwise)
+                        ledcWrite(PWM_CW_PIN, 0);                                      // stopping CW (clockwise)
                     }
                     else
                     {
@@ -283,7 +288,25 @@ void ControlLoopTask(void *parameter)
                 }
                 else if (input_signal == "manual")
                 {
-                    // Manual input logic here (e.g., read from serial or buttons)
+                    if (current_time <= experiment_duration * 1000.0)
+                    {
+                        pwm = ref/100*pwm_max; // convert reference percentage to PWM value
+                        if (ref > 0)
+                        {
+                            ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
+                            ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
+                        }
+                        else
+                        {
+                            pwm = -pwm; // make positive for PWM output
+                            ledcWrite(PWM_CCW_PIN, 0);  // writing to CCW (counter-clockwise)
+                            ledcWrite(PWM_CW_PIN, pwm); // stopping CW (clockwise)
+                        }
+                    }
+                    else
+                    {
+                        finishExperiment();
+                    }
                 }
             }
 
@@ -298,7 +321,7 @@ void ControlLoopTask(void *parameter)
 
 void ConfigTask(void *parameter)
 {
-    const TickType_t xPeriod = pdMS_TO_TICKS(20);   // 10 ms period
+    const TickType_t xPeriod = pdMS_TO_TICKS(20);   // 20 ms period
     TickType_t xLastWakeTime = xTaskGetTickCount(); // initialize once
 
     // This task can be used for more complex configuration handling if needed
@@ -326,6 +349,10 @@ void ConfigTask(void *parameter)
                             t_ini = millis();
                             Serial.println("STARTED"); // <-- confirm reception
                             digitalWrite(LED_PIN, HIGH);
+
+                            // Initialize timing/count baseline to avoid spurious first-sample velocity
+                            last_count = counter; // baseline the last_count to current counter
+                            last_time = 0;        // keep behavior consistent: current_time will be small after t_ini
 
                             // Reset moving-average filter state
                             vel_ma_idx = 0;
@@ -360,6 +387,16 @@ void ConfigTask(void *parameter)
                             {
                                 vel_ma_buf[i] = 0.0f;
                             }
+                        }
+                    }
+                    // Check if a number
+                    else if (lineBuffer.length() >= 3 && lineBuffer.length() <= 6)
+                    {
+                        if (lineBuffer.toFloat() >= -100.0f && lineBuffer.toFloat() <= 100.0f)
+                        {
+                            ref = lineBuffer.toFloat();
+                            Serial.print("Manual reference set to: ");
+                            Serial.println(ref);
                         }
                     }
                     // Otherwise, try to parse as JSON configuration
@@ -402,6 +439,17 @@ void ConfigTask(void *parameter)
                                 Kd = doc["Kd"].as<float>();
                             }
 
+                            // Extract experiment duration and sampling rate
+                            if (doc.containsKey("experiment_duration"))
+                            {
+                                experiment_duration = doc["experiment_duration"].as<float>();
+                            }
+                            if (doc.containsKey("sampling_rate"))
+                            {
+                                // FIX: assign sampling_rate (was mistakenly assigning to Kd)
+                                sampling_rate = doc["sampling_rate"].as<float>();
+                            }
+
                             Serial.println("Config received:");
                             Serial.print("  control_mode: ");
                             Serial.println(control_mode);
@@ -413,6 +461,10 @@ void ConfigTask(void *parameter)
                             Serial.println(Ki, 2);
                             Serial.print("  Kd: ");
                             Serial.println(Kd, 2);
+                            Serial.print("  experiment_duration: ");
+                            Serial.println(experiment_duration, 2);
+                            Serial.print("  sampling_rate: ");
+                            Serial.println(sampling_rate, 2);
 
                             // Validate values and set defaults if invalid
                             if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")
@@ -439,7 +491,7 @@ void ConfigTask(void *parameter)
 
         if (experiment_running)
         {
-            float power = pwm / (float)pwm_max * 100.0f; // convert PWM to percentage of max power
+            float power = pwm / (float)pwm_max * 100.0f;                                            // convert PWM to percentage of max power
             Serial.printf("%.2f;%.4f;%.4f;%.4f;%d\n", power, pos, vel, vel_filtered, current_time); // PWM;pos;vel;vel_filtered;time
         }
 
