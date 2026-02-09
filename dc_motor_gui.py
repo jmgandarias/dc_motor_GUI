@@ -306,15 +306,14 @@ class ControlGUI(tk.Tk):
         )
         self.stop_no_save_btn.grid(row=3, column=2, **pad)
 
-        # Add a visible sash handle with a small up/down arrow so the user sees where to click/drag.
-        sash_handle = tk.Frame(self.paned, height=12, bg=self.cget("bg"))
+        # Visible sash handle: place it INSIDE the top pane (bottom of top) so the PanedWindow keeps two panes.
+        sash_handle = tk.Frame(top, height=12, bg=self.cget("bg"))
         arrow = tk.Label(sash_handle, text="⇅", fg="black", bg=self.cget("bg"))
         arrow.pack(expand=True)
         sash_handle.configure(cursor="sb_v_double_arrow")
-        # Bind dragging so clicking the arrow lets the user move the sash
-        sash_handle.bind("<ButtonPress-1>", lambda e: setattr(self, "_paned_rooty", self.paned.winfo_rooty()))
+        # Bind dragging so clicking the arrow lets the user move the PanedWindow sash
         sash_handle.bind("<B1-Motion>", self._drag_paned)
-        self.paned.add(sash_handle, minsize=6)
+        sash_handle.pack(side="bottom", fill="x", padx=0, pady=0)
 
         # Notebook with Plot and Log tabs goes into the lower pane of the PanedWindow
         self.notebook = ttk.Notebook(self.paned)
@@ -341,12 +340,22 @@ class ControlGUI(tk.Tk):
         self.after(PLOT_UPDATE_MS, self._update_plot)
 
     def _drag_paned(self, event):
-        """Handle dragging of the sash handle to resize the PanedWindow."""
+        """Handle dragging of the visible sash handle to resize the PanedWindow."""
         try:
-            delta = event.y_root - self._paned_rooty
-            sash_pos = self.paned.sash_coord(0)[1] + delta
-            self.paned.sash_place(0, 0, sash_pos)
-            self._paned_rooty = event.y_root
+            # Compute target y in paned coordinates
+            paned_rooty = self.paned.winfo_rooty()
+            y = event.y_root - paned_rooty
+            # Constrain to sensible min/max so panes don't collapse
+            min_top = 60
+            min_bottom = 80
+            paned_h = max(self.paned.winfo_height(), 200)
+            max_y = paned_h - min_bottom
+            y = max(min_top, min(y, max_y))
+            # Place sash (between top and notebook) — sash index 0
+            try:
+                self.paned.sash_place(0, 0, int(y))
+            except Exception:
+                pass
         except Exception:
             pass
 
@@ -971,58 +980,56 @@ class ControlGUI(tk.Tk):
             vel = [r[2] for r in rows]
             velf = [r[3] for r in rows]
 
-            # Update power series
-            self.line_power.set_data(t, power)
             # Update series data
+            self.line_power.set_data(t, power)
             self.line_pos.set_data(t, pos)
             self.line_vel.set_data(t, vel)
             self.line_vel_filt.set_data(t, velf)
+
             # Autoscale axes to data
-            self.ax_power.relim()
-            self.ax_power.autoscale_view()
-            self.ax_pos.relim()
-            self.ax_pos.autoscale_view()
-            self.ax_vel.relim()
-            self.ax_vel.autoscale_view()
-
-            # Ensure x-limits cover data
-            if t:
-                # set x-limits on the shared (top) axis    def _drag_paned(self, event):
-                self.ax_power.set_xlim(t[0], t[-1] if t[-1] > t[0] else t[0] + 1e-3) the visible arrow handle to move the paned sash."""
-
-            self.canvas.draw_idle()rooty = getattr(self, "_paned_rooty", self.paned.winfo_rooty())
-            y = event.y_root - paned_rooty
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    app.mainloop()    app = ControlGUI()if __name__ == "__main__":        self.canvas.draw_idle()        self.line_vel_filt.set_visible(bool(self.show_velf_var.get()))        self.line_vel.set_visible(bool(self.show_vel_var.get()))        self.line_pos.set_visible(bool(self.show_pos_var.get()))        self.line_power.set_visible(bool(self.show_power_var.get()))        # Toggle visibility based on checkboxes    def _on_series_toggle(self):        self.pause_btn.configure(text="Resume Plot" if self.plot_paused else "Pause Plot")        self.plot_paused = not self.plot_paused    def _toggle_plot_pause(self):        self.after(PLOT_UPDATE_MS, self._update_plot)        # Schedule next update            # Constrain to sensible min/max so panes don't collapse
-            min_top = 60
-            min_bottom = 80
-            paned_h = max(self.paned.winfo_height(), 200)
-            max_y = paned_h - min_bottom
-            y = max(min_top, min(y, max_y))
             try:
-                # Move first sash (between first and second pane)
-                self.paned.sash_place(0, 0, int(y))
+                self.ax_power.relim()
+                self.ax_power.autoscale_view()
             except Exception:
                 pass
+            try:
+                self.ax_pos.relim()
+                self.ax_pos.autoscale_view()
+            except Exception:
+                pass
+            try:
+                self.ax_vel.relim()
+                self.ax_vel.autoscale_view()
+            except Exception:
+                pass
+
+            # Ensure x-limits cover data (set on the shared top axis)
+            if t:
+                try:
+                    self.ax_power.set_xlim(t[0], t[-1] if t[-1] > t[0] else t[0] + 1e-3)
+                except Exception:
+                    pass
+
+            self.canvas.draw_idle()
+
+        # Schedule next update
+        self.after(PLOT_UPDATE_MS, self._update_plot)
+
+    def _toggle_plot_pause(self):
+        self.plot_paused = not self.plot_paused
+        try:
+            self.pause_btn.configure(text="Resume Plot" if self.plot_paused else "Pause Plot")
+        except Exception:
+            pass
+
+    def _on_series_toggle(self):
+        # Toggle visibility based on checkboxes
+        try:
+            self.line_power.set_visible(bool(self.show_power_var.get()))
+            self.line_pos.set_visible(bool(self.show_pos_var.get()))
+            self.line_vel.set_visible(bool(self.show_vel_var.get()))
+            self.line_vel_filt.set_visible(bool(self.show_velf_var.get()))
+            self.canvas.draw_idle()
         except Exception:
             pass
 
