@@ -102,7 +102,7 @@ class ControlGUI(tk.Tk):
         # Queue used to deliver log/text messages from the reader thread to the UI thread
         self.lines_queue = queue.Queue()
 
-        # In-memory buffer of parsed data rows. Each row is [PWM(int), pos(float), vel(float), time_ms(float)].
+        # In-memory buffer of parsed data rows. Each row is [power(float), pos(float), vel(float), time_ms(float)].
         # Access to this list must be guarded by data_lock.
         self.data_rows = []
         self.data_lock = threading.Lock()
@@ -221,9 +221,18 @@ class ControlGUI(tk.Tk):
         browse_btn = ttk.Button(out, text="Browse…", command=self._browse_outfile)
         browse_btn.grid(row=0, column=2, **pad)
 
-        # --- Configuration frame ---
-        config_frame = ttk.LabelFrame(self, text="Configuration")
-        config_frame.pack(fill="x", **pad)
+        # --- Top area: Configuration (left) and Controls (right) inside a resizable PanedWindow ---
+        # Create a vertical PanedWindow so the user can drag the sash to resize
+        self.paned = tk.PanedWindow(self, orient="vertical")
+        self.paned.pack(fill="both", expand=True, **pad)
+
+        # The left/top pane: container for Configuration and (visual) Controls frame
+        top = ttk.Frame(self.paned)
+        self.paned.add(top)
+
+        # Configuration frame on the left (expands to take available width)
+        config_frame = ttk.LabelFrame(top, text="Configuration")
+        config_frame.pack(side="left", fill="x", expand=True, **pad)
 
         ttk.Label(config_frame, text="Control Mode:").grid(row=0, column=0, sticky="w", **pad)
         self.control_mode_cmb = ttk.Combobox(
@@ -280,33 +289,40 @@ class ControlGUI(tk.Tk):
         )
         self.send_config_btn.grid(row=2, column=5, columnspan=2, sticky="w", **pad)
 
-        # Controls frame
-        ctrl = ttk.LabelFrame(self, text="Controls")
-        ctrl.pack(fill="x", **pad)
-
+        # Controls moved into the Configuration block (row 3)
         # Start is disabled until connected
         self.start_btn = ttk.Button(
-            ctrl, text="Start Experiment", command=self._on_start, state="disabled"
+            config_frame, text="Start Experiment", command=self._on_start, state="disabled"
         )
-        self.start_btn.grid(row=0, column=0, **pad)
+        self.start_btn.grid(row=3, column=0, **pad)
 
         self.stop_btn = ttk.Button(
-            ctrl, text="Save", command=self._on_save, state="disabled"
+            config_frame, text="Save", command=self._on_save, state="disabled"
         )
-        self.stop_btn.grid(row=0, column=1, **pad)
+        self.stop_btn.grid(row=3, column=1, **pad)
 
         self.stop_no_save_btn = ttk.Button(
-            ctrl, text="Stop", command=self._on_stop_without_save, state="disabled"
+            config_frame, text="Stop", command=self._on_stop_without_save, state="disabled"
         )
-        self.stop_no_save_btn.grid(row=0, column=2, **pad)
+        self.stop_no_save_btn.grid(row=3, column=2, **pad)
 
-        # Status text
+        # Add a visible sash handle with a small up/down arrow so the user sees where to click/drag.
+        sash_handle = tk.Frame(self.paned, height=12, bg=self.cget("bg"))
+        arrow = tk.Label(sash_handle, text="⇅", fg="black", bg=self.cget("bg"))
+        arrow.pack(expand=True)
+        sash_handle.configure(cursor="sb_v_double_arrow")
+        # Bind dragging so clicking the arrow lets the user move the sash
+        sash_handle.bind("<ButtonPress-1>", lambda e: setattr(self, "_paned_rooty", self.paned.winfo_rooty()))
+        sash_handle.bind("<B1-Motion>", self._drag_paned)
+        self.paned.add(sash_handle, minsize=6)
+
+        # Notebook with Plot and Log tabs goes into the lower pane of the PanedWindow
+        self.notebook = ttk.Notebook(self.paned)
+        self.paned.add(self.notebook)
+
+        # Status text (keep outside the paned so it remains visible)
         self.status_var = tk.StringVar(value="Idle")
         ttk.Label(self, textvariable=self.status_var).pack(anchor="w", **pad)
-
-        # Notebook with Plot and Log tabs
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill="both", expand=True, **pad)
 
         # Plot tab
         self.plot_tab = ttk.Frame(self.notebook)
@@ -323,6 +339,16 @@ class ControlGUI(tk.Tk):
         # Initialize matplotlib figure in plot tab and schedule periodic updates
         self._init_plot()
         self.after(PLOT_UPDATE_MS, self._update_plot)
+
+    def _drag_paned(self, event):
+        """Handle dragging of the sash handle to resize the PanedWindow."""
+        try:
+            delta = event.y_root - self._paned_rooty
+            sash_pos = self.paned.sash_coord(0)[1] + delta
+            self.paned.sash_place(0, 0, sash_pos)
+            self._paned_rooty = event.y_root
+        except Exception:
+            pass
 
     # -------------------- Serial helpers --------------------
     def _list_ports(self):
@@ -413,9 +439,16 @@ class ControlGUI(tk.Tk):
         self.last_plot_len = 0
         try:
             # Clear plotted lines and autoscale so old data doesn't interfere
+            self.line_power.set_data([], [])
             self.line_pos.set_data([], [])
             self.line_vel.set_data([], [])
             self.line_vel_filt.set_data([], [])
+            # Recompute limits for all axes
+            try:
+                self.ax_power.relim()
+                self.ax_power.autoscale_view()
+            except Exception:
+                pass
             self.ax_pos.relim()
             self.ax_pos.autoscale_view()
             self.ax_vel.relim()
@@ -680,8 +713,8 @@ class ControlGUI(tk.Tk):
     def _handle_line(self, line: str):
         """Process a single text line from the ESP32.
 
-                Expected data line format: "PWM;pos;vel;vel_filtered;time"
-          - PWM: integer (but tolerant to floats like "12.0")
+                Expected data line format: "power;pos;vel;vel_filtered;time"
+          - power: float (% of max PWM)
           - pos: float (radians)
                     - vel: float (rad/s)
                     - vel_filtered: float (rad/s)
@@ -729,8 +762,8 @@ class ControlGUI(tk.Tk):
             return  # ignore malformed lines
 
         try:
-            # Accept integer or float-looking PWM, be tolerant to formatting
-            pwm = int(float(parts[0]))
+            # Accept integer or float-looking power, be tolerant to formatting
+            power = float(parts[0])
             pos = float(parts[1])
             vel = float(parts[2])
             velf = float(parts[3])
@@ -740,7 +773,7 @@ class ControlGUI(tk.Tk):
 
         # Append row to shared buffer under lock
         with self.data_lock:
-            self.data_rows.append([pwm, pos, vel, velf, tms])
+            self.data_rows.append([power, pos, vel, velf, tms])
 
     # -------------------- Save CSV --------------------
     def _save_csv(self):
@@ -803,7 +836,7 @@ class ControlGUI(tk.Tk):
             # Write header + data rows
             with open(out_path, mode="w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["PWM", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "time_ms"])
+                writer.writerow(["power", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "time_ms"])
                 writer.writerows(rows)
             self._log(f"Saved {len(rows)} rows to: {out_path}")
             messagebox.showinfo("Success", f"Data saved successfully to:\n{out_path}")
@@ -863,7 +896,7 @@ class ControlGUI(tk.Tk):
 
     # -------------------- Plot helpers --------------------
     def _init_plot(self):
-        # Create matplotlib Figure with two subplots: position and velocity vs time
+        # Create matplotlib Figure with three subplots: power, position and velocity vs time
         # Controls toolbar (pause/resume, series selection)
         toolbar = ttk.Frame(self.plot_tab)
         toolbar.pack(fill="x", padx=8, pady=4)
@@ -872,28 +905,36 @@ class ControlGUI(tk.Tk):
         self.pause_btn = ttk.Button(toolbar, text="Pause Plot", command=self._toggle_plot_pause)
         self.pause_btn.pack(side="left")
 
-        # Series selection checkboxes
+        # Series selection checkboxes (include Power)
+        self.show_power_var = tk.IntVar(value=1)
         self.show_pos_var = tk.IntVar(value=1)
         self.show_vel_var = tk.IntVar(value=1)
         self.show_velf_var = tk.IntVar(value=1)
 
+        ttk.Checkbutton(toolbar, text="Power", variable=self.show_power_var, command=self._on_series_toggle).pack(side="left", padx=6)
         ttk.Checkbutton(toolbar, text="Position", variable=self.show_pos_var, command=self._on_series_toggle).pack(side="left", padx=6)
         ttk.Checkbutton(toolbar, text="Velocity", variable=self.show_vel_var, command=self._on_series_toggle).pack(side="left", padx=6)
         ttk.Checkbutton(toolbar, text="Velocity (filtered)", variable=self.show_velf_var, command=self._on_series_toggle).pack(side="left", padx=6)
 
-        self.fig = Figure(figsize=(6, 4), dpi=100)
-        self.ax_pos = self.fig.add_subplot(2, 1, 1)
-        self.ax_vel = self.fig.add_subplot(2, 1, 2, sharex=self.ax_pos)
+        # Use 3 rows: Power (top), Position (middle), Velocity (bottom). Share x-axis.
+        self.fig = Figure(figsize=(6, 5), dpi=100)
+        self.ax_power = self.fig.add_subplot(3, 1, 1)
+        self.ax_pos = self.fig.add_subplot(3, 1, 2, sharex=self.ax_power)
+        self.ax_vel = self.fig.add_subplot(3, 1, 3, sharex=self.ax_power)
 
+        self.ax_power.set_ylabel("power [%]")
         self.ax_pos.set_ylabel("pos [rad]")
         self.ax_vel.set_ylabel("vel [rad/s]")
         self.ax_vel.set_xlabel("time [s]")
+        self.ax_power.grid(True, linestyle=":", alpha=0.6)
         self.ax_pos.grid(True, linestyle=":", alpha=0.6)
         self.ax_vel.grid(True, linestyle=":", alpha=0.6)
 
+        (self.line_power,) = self.ax_power.plot([], [], color="tab:red", label="power", linewidth=1.5, antialiased=True)
         (self.line_pos,) = self.ax_pos.plot([], [], color="tab:blue", label="pos", linewidth=1.5, antialiased=True)
         (self.line_vel,) = self.ax_vel.plot([], [], color="tab:orange", label="vel", linewidth=1.5, antialiased=True)
         (self.line_vel_filt,) = self.ax_vel.plot([], [], color="tab:green", label="vel_filt", linewidth=1.5, antialiased=True)
+        self.ax_power.legend(loc="upper right")
         self.ax_pos.legend(loc="upper right")
         self.ax_vel.legend(loc="upper right")
 
@@ -920,21 +961,25 @@ class ControlGUI(tk.Tk):
         self.last_plot_len = len(rows)
 
         if rows:
-            # Each row is [PWM, pos, vel, vel_filtered, tms]
+            # Each row is [power, pos, vel, vel_filtered, tms]
             # Limit number of points for performance
             if len(rows) > MAX_PLOT_POINTS:
                 rows = rows[-MAX_PLOT_POINTS:]
             t = [r[4] / 1000.0 for r in rows]
+            power = [r[0] for r in rows]
             pos = [r[1] for r in rows]
             vel = [r[2] for r in rows]
             velf = [r[3] for r in rows]
 
+            # Update power series
+            self.line_power.set_data(t, power)
             # Update series data
             self.line_pos.set_data(t, pos)
             self.line_vel.set_data(t, vel)
             self.line_vel_filt.set_data(t, velf)
-
             # Autoscale axes to data
+            self.ax_power.relim()
+            self.ax_power.autoscale_view()
             self.ax_pos.relim()
             self.ax_pos.autoscale_view()
             self.ax_vel.relim()
@@ -942,23 +987,44 @@ class ControlGUI(tk.Tk):
 
             # Ensure x-limits cover data
             if t:
-                self.ax_pos.set_xlim(t[0], t[-1] if t[-1] > t[0] else t[0] + 1e-3)
+                # set x-limits on the shared (top) axis    def _drag_paned(self, event):
+                self.ax_power.set_xlim(t[0], t[-1] if t[-1] > t[0] else t[0] + 1e-3) the visible arrow handle to move the paned sash."""
 
-            self.canvas.draw_idle()
+            self.canvas.draw_idle()rooty = getattr(self, "_paned_rooty", self.paned.winfo_rooty())
+            y = event.y_root - paned_rooty
 
-        # Schedule next update
-        self.after(PLOT_UPDATE_MS, self._update_plot)
 
-    def _toggle_plot_pause(self):
-        self.plot_paused = not self.plot_paused
-        self.pause_btn.configure(text="Resume Plot" if self.plot_paused else "Pause Plot")
 
-    def _on_series_toggle(self):
-        # Toggle visibility based on checkboxes
-        self.line_pos.set_visible(bool(self.show_pos_var.get()))
-        self.line_vel.set_visible(bool(self.show_vel_var.get()))
-        self.line_vel_filt.set_visible(bool(self.show_velf_var.get()))
-        self.canvas.draw_idle()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    app.mainloop()    app = ControlGUI()if __name__ == "__main__":        self.canvas.draw_idle()        self.line_vel_filt.set_visible(bool(self.show_velf_var.get()))        self.line_vel.set_visible(bool(self.show_vel_var.get()))        self.line_pos.set_visible(bool(self.show_pos_var.get()))        self.line_power.set_visible(bool(self.show_power_var.get()))        # Toggle visibility based on checkboxes    def _on_series_toggle(self):        self.pause_btn.configure(text="Resume Plot" if self.plot_paused else "Pause Plot")        self.plot_paused = not self.plot_paused    def _toggle_plot_pause(self):        self.after(PLOT_UPDATE_MS, self._update_plot)        # Schedule next update            # Constrain to sensible min/max so panes don't collapse
+            min_top = 60
+            min_bottom = 80
+            paned_h = max(self.paned.winfo_height(), 200)
+            max_y = paned_h - min_bottom
+            y = max(min_top, min(y, max_y))
+            try:
+                # Move first sash (between first and second pane)
+                self.paned.sash_place(0, 0, int(y))
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
