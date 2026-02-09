@@ -1,6 +1,6 @@
 {
     "control_mode": "open-loop",
-    "input_signal": "ramp",
+    "input_signal": "step",
     "Kp": 1.0,
     "Ki": 0.0,
     "Kd": 0.0,

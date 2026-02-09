@@ -207,8 +207,13 @@ class ControlGUI(tk.Tk):
 
         # Sensible default path: ~/Documents if it exists, else CWD, with timestamped name.
         default_name = datetime.now().strftime("esp32_step_%Y%m%d_%H%M%S.csv")
-        docs = os.path.expanduser("~/Documents")
-        default_dir = docs if os.path.isdir(docs) else os.getcwd()
+        # Use ./experiment_data as default output directory (create if missing)
+        default_dir = os.path.join(os.getcwd(), "experiment_data")
+        try:
+            os.makedirs(default_dir, exist_ok=True)
+        except Exception:
+            # Fallback to current working directory if creation fails
+            default_dir = os.getcwd()
         default_path = os.path.normpath(os.path.join(default_dir, default_name))
         self.file_entry.insert(0, default_path)
 
@@ -231,10 +236,12 @@ class ControlGUI(tk.Tk):
         self.control_mode_cmb.grid(row=0, column=1, sticky="w", **pad)
 
         # PID gains on same row as Control Mode
-        ttk.Label(config_frame, text="Kp:").grid(row=0, column=2, sticky="w", **pad)
+        # Make Kp label align to the right of its column and reduce horizontal gap
+        ttk.Label(config_frame, text="Kp:").grid(row=0, column=2, sticky="e", padx=2, pady=6)
         self.kp_entry = ttk.Entry(config_frame, width=10)
         self.kp_entry.insert(0, "1.0")
-        self.kp_entry.grid(row=0, column=3, sticky="w", **pad)
+        # Keep vertical padding consistent, use a small left padx so entry sits close to the label
+        self.kp_entry.grid(row=0, column=3, sticky="w", padx=6, pady=6)
 
         ttk.Label(config_frame, text="Ki:").grid(row=0, column=4, sticky="w", **pad)
         self.ki_entry = ttk.Entry(config_frame, width=10)
