@@ -747,7 +747,7 @@ class ControlGUI(tk.Tk):
         """Process a single text line from the ESP32.
 
                 Expected data line format: "power;pos;vel;vel_filtered;time"
-          - power: float (% of max PWM)
+          - power: float (volts)
           - pos: float (radians)
                     - vel: float (rad/s)
                     - vel_filtered: float (rad/s)
@@ -955,7 +955,7 @@ class ControlGUI(tk.Tk):
         self.ax_pos = self.fig.add_subplot(3, 1, 2, sharex=self.ax_power)
         self.ax_vel = self.fig.add_subplot(3, 1, 3, sharex=self.ax_power)
 
-        self.ax_power.set_ylabel("power [%]")
+        self.ax_power.set_ylabel("power [V]")
         self.ax_pos.set_ylabel("pos [rad]")
         self.ax_vel.set_ylabel("vel [rad/s]")
         self.ax_vel.set_xlabel("time [s]")
@@ -1098,7 +1098,7 @@ class ControlGUI(tk.Tk):
                 self.manual_ref_strvar.set("0.00")
 
     def _on_set_ref(self):
-        """Handler for Set Ref button: validate value and send 'R<value>\\n' over serial."""
+        """Handler for Set Ref button: validate value and send '<value>\\n' over serial."""
         try:
             txt = self.manual_ref_strvar.get().strip()
             if txt == "":
@@ -1118,11 +1118,11 @@ class ControlGUI(tk.Tk):
                 return
 
             # Compose command (use 'R' prefix as discussed) and send
-            cmd = f"R{v}\n".encode("utf-8")
+            cmd = f"{v}\n".encode("utf-8")
             try:
                 self.ser.write(cmd)
                 self.ser.flush()
-                self._log(f"Sent manual ref: R{v:.2f}")
+                self._log(f"Sent manual ref: {v:.2f}")
             except Exception as e:
                 messagebox.showerror("Serial error", f"Failed to send Ref:\n{e}")
                 self._log(f"Error sending Ref: {e}")

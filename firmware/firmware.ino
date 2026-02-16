@@ -53,6 +53,7 @@ float ref = 0.0f; // reference value for control (e.g., target position or veloc
 const int frequency = 10000;               // PWM frequency in Hz
 const int resolution = 11;                 // PWM resolution in bits
 const int pwm_max = (1 << resolution) - 1; // maximum duty (2048 for 11-bit)
+const int voltage_max = 12;                // maximum voltage corresponding to pwm_max (for reference)
 
 // Encoder counter
 volatile int counter = 0;    // running encoder pulse count (signed)
@@ -274,7 +275,7 @@ void ControlLoopTask(void *parameter)
                 }
                 else if (input_signal == "ramp")
                 {
-                    // Manual input logic here (e.g., read from serial or buttons)
+                    // ramp input logic here (e.g., read from serial or buttons)
                     if (current_time <= experiment_duration * 1000.0)
                     {
                         pwm = current_time / (experiment_duration * 1000.0) * pwm_max; // linear ramp from 0 to max over experiment duration
@@ -290,7 +291,7 @@ void ControlLoopTask(void *parameter)
                 {
                     if (current_time <= experiment_duration * 1000.0)
                     {
-                        pwm = ref/100*pwm_max; // convert reference percentage to PWM value
+                        pwm = ref / 100 * pwm_max; // convert reference percentage to PWM value
                         if (ref > 0)
                         {
                             ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
@@ -298,7 +299,7 @@ void ControlLoopTask(void *parameter)
                         }
                         else
                         {
-                            pwm = -pwm; // make positive for PWM output
+                            pwm = -pwm;                 // make positive for PWM output
                             ledcWrite(PWM_CCW_PIN, 0);  // writing to CCW (counter-clockwise)
                             ledcWrite(PWM_CW_PIN, pwm); // stopping CW (clockwise)
                         }
@@ -491,7 +492,7 @@ void ConfigTask(void *parameter)
 
         if (experiment_running)
         {
-            float power = pwm / (float)pwm_max * 100.0f;                                            // convert PWM to percentage of max power
+            float power = pwm / (float)pwm_max * voltage_max;                                       // convert PWM to volts
             Serial.printf("%.2f;%.4f;%.4f;%.4f;%d\n", power, pos, vel, vel_filtered, current_time); // PWM;pos;vel;vel_filtered;time
         }
 
