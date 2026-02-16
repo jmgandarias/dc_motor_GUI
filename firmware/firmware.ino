@@ -250,7 +250,6 @@ void ControlLoopTask(void *parameter)
             {
                 if (input_signal == "step")
                 {
-                    Serial.println("step set ok");
                     if ((current_time < experiment_duration * 1000.0 / 2))
                     {
                         ref = 0.0f; // no power step input
@@ -312,6 +311,7 @@ void ControlLoopTask(void *parameter)
                 integral_error = integral_error + error;                                    // integral term
                 derivative_error = error - error_prev;                                      // derivative term
                 actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
+                pwm = actuation;                                                            // Storage of actuation value for sending via serial
                 error_prev = error;                                                         // store error for next iteration
 
                 if (actuation >= 0)
@@ -406,6 +406,7 @@ void ControlLoopTask(void *parameter)
                 integral_error = integral_error + error;                                    // integral term
                 derivative_error = error - error_prev;                                      // derivative term
                 actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
+                pwm = actuation;                                                            // Storage of actuation value for sending via serial
                 error_prev = error;                                                         // store error for next iteration
 
                 if (actuation >= 0)
@@ -679,8 +680,8 @@ void ConfigTask(void *parameter)
 
         if (experiment_running)
         {
-            float power = pwm / (float)pwm_max * voltage_max;                                       // convert PWM to volts
-            Serial.printf("%.2f;%.4f;%.4f;%.4f;%d\n", power, pos, vel, vel_filtered, current_time); // PWM;pos;vel;vel_filtered;time
+            float power = pwm / (float)pwm_max * voltage_max;                                                   // convert PWM to volts
+            Serial.printf("%.2f;%.4f;%.4f;%.4f; %.2f; %d\n", power, pos, vel, vel_filtered, ref, current_time); // PWM;pos;vel;vel_filtered;time
         }
 
         vTaskDelayUntil(&xLastWakeTime, xPeriod); // Sleep until next cycle

@@ -469,8 +469,10 @@ class ControlGUI(tk.Tk):
             # Clear plotted lines and autoscale so old data doesn't interfere
             self.line_power.set_data([], [])
             self.line_pos.set_data([], [])
+            self.line_pos_ref.set_data([], [])
             self.line_vel.set_data([], [])
             self.line_vel_filt.set_data([], [])
+            self.line_vel_ref.set_data([], [])
             # Recompute limits for all axes
             try:
                 self.ax_power.relim()
@@ -535,8 +537,12 @@ class ControlGUI(tk.Tk):
             self.status_var.set("Saved.")
 
     def _on_stop_without_save(self):
-        """Stop collection without saving the data."""
+        """Stop collection without saving the data, then disconnect, reconnect, and resend config."""
+        # First, stop the experiment
         self._on_stop_and_save(force_save=False)
+        
+        # Schedule the disconnect/reconnect/config sequence
+        self.after(100, self._reconnect_and_resend_config)
 
     def _on_send_config(self):
         """Update config.json file and send the configuration to the ESP32 via serial."""
@@ -589,13 +595,13 @@ class ControlGUI(tk.Tk):
                 return
             
             # Validate PID gains are within acceptable ranges
-            if kp < 0 or kp > 30:
+            if kp < 0 or kp > 2000:
                 messagebox.showerror("Invalid Range", "Kp must be between 0 and 30.")
                 return
-            if ki < 0 or ki > 10:
+            if ki < 0 or ki > 1000:
                 messagebox.showerror("Invalid Range", "Ki must be between 0 and 10.")
                 return
-            if kd < 0 or kd > 10:
+            if kd < 0 or kd > 1000:
                 messagebox.showerror("Invalid Range", "Kd must be between 0 and 10.")
                 return
             
@@ -703,6 +709,29 @@ class ControlGUI(tk.Tk):
         self.stop_no_save_btn["state"] = "disabled"
         self.send_config_btn["state"] = "disabled"
 
+    def _reconnect_and_resend_config(self):
+        """Disconnect, wait 1s, reconnect, wait 1s, then send current config."""
+        # Step 1: Disconnect
+        self._on_disconnect()
+        self._log("Disconnecting to reset device...")
+        
+        # Step 2: Wait 1 second before reconnecting
+        self.after(1000, self._reconnect_step)
+
+    def _reconnect_step(self):
+        """Step 2: Reconnect to the device."""
+        self._log("Reconnecting to device...")
+        self._on_connect()
+        
+        # Step 3: Wait 1 second before sending config
+        self.after(1000, self._send_config_step)
+
+    def _send_config_step(self):
+        """Step 3: Send the current configuration."""
+        self._log("Sending configuration...")
+        if self.ser and self.ser.is_open:
+            self._on_send_config()
+
     # -------------------- Reader & parsing --------------------
     def _reader_loop(self):
         """Background thread loop that reads raw bytes from serial and yields complete lines.
@@ -791,7 +820,7 @@ class ControlGUI(tk.Tk):
 
         # Parse semicolon-separated fields
         parts = line.split(";")
-        if len(parts) != 5:
+        if len(parts) != 6:
             return  # ignore malformed lines
 
         try:
@@ -800,13 +829,14 @@ class ControlGUI(tk.Tk):
             pos = float(parts[1])
             vel = float(parts[2])
             velf = float(parts[3])
-            tms = float(parts[4])  # milliseconds reported by ESP32
+            ref = float(parts[4])
+            tms = float(parts[5])  # milliseconds reported by ESP32
         except ValueError:
             return  # ignore parse errors
 
         # Append row to shared buffer under lock
         with self.data_lock:
-            self.data_rows.append([power, pos, vel, velf, tms])
+            self.data_rows.append([power, pos, vel, velf, ref, tms])
 
     # -------------------- Save CSV --------------------
     def _save_csv(self):
@@ -869,7 +899,7 @@ class ControlGUI(tk.Tk):
             # Write header + data rows
             with open(out_path, mode="w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["power", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "time_ms"])
+                writer.writerow(["power", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "ref", "time_ms"])
                 writer.writerows(rows)
             self._log(f"Saved {len(rows)} rows to: {out_path}")
             messagebox.showinfo("Success", f"Data saved successfully to:\n{out_path}")
@@ -965,8 +995,15 @@ class ControlGUI(tk.Tk):
 
         (self.line_power,) = self.ax_power.plot([], [], color="tab:red", label="power", linewidth=1.5, antialiased=True)
         (self.line_pos,) = self.ax_pos.plot([], [], color="tab:blue", label="pos", linewidth=1.5, antialiased=True)
+        (self.line_pos_ref,) = self.ax_pos.plot([], [], color="tab:cyan", label="ref", linewidth=1.5, linestyle="--", antialiased=True)
         (self.line_vel,) = self.ax_vel.plot([], [], color="tab:orange", label="vel", linewidth=1.5, antialiased=True)
         (self.line_vel_filt,) = self.ax_vel.plot([], [], color="tab:green", label="vel_filt", linewidth=1.5, antialiased=True)
+        (self.line_vel_ref,) = self.ax_vel.plot([], [], color="tab:cyan", label="ref", linewidth=1.5, linestyle="--", antialiased=True)
+        
+        # Add saturation lines for power (12V and -12V)
+        self.ax_power.axhline(y=12, color="gray", linestyle="--", linewidth=1, alpha=0.7, label="saturation")
+        self.ax_power.axhline(y=-12, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+        
         self.ax_power.legend(loc="upper right")
         self.ax_pos.legend(loc="upper right")
         self.ax_vel.legend(loc="upper right")
@@ -994,21 +1031,36 @@ class ControlGUI(tk.Tk):
         self.last_plot_len = len(rows)
 
         if rows:
-            # Each row is [power, pos, vel, vel_filtered, tms]
+            # Each row is [power, pos, vel, vel_filtered, ref, tms]
             # Limit number of points for performance
             if len(rows) > MAX_PLOT_POINTS:
                 rows = rows[-MAX_PLOT_POINTS:]
-            t = [r[4] / 1000.0 for r in rows]
+            t = [r[5] / 1000.0 for r in rows]
             power = [r[0] for r in rows]
             pos = [r[1] for r in rows]
             vel = [r[2] for r in rows]
             velf = [r[3] for r in rows]
+            ref = [r[4] for r in rows]
 
             # Update series data
             self.line_power.set_data(t, power)
             self.line_pos.set_data(t, pos)
             self.line_vel.set_data(t, vel)
             self.line_vel_filt.set_data(t, velf)
+            
+            # Update ref lines based on control mode
+            control_mode = self.control_mode_cmb.get()
+            if control_mode == "position":
+                self.line_pos_ref.set_data(t, ref)
+                self.line_pos_ref.set_visible(True)
+                self.line_vel_ref.set_visible(False)
+            elif control_mode == "velocity":
+                self.line_vel_ref.set_data(t, ref)
+                self.line_vel_ref.set_visible(True)
+                self.line_pos_ref.set_visible(False)
+            else:  # open-loop
+                self.line_pos_ref.set_visible(False)
+                self.line_vel_ref.set_visible(False)
 
             # Autoscale axes to data
             try:
