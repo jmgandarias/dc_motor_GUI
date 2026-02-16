@@ -250,6 +250,7 @@ void ControlLoopTask(void *parameter)
             {
                 if (input_signal == "step")
                 {
+                    Serial.println("step set ok");
                     if ((current_time < experiment_duration * 1000.0 / 2))
                     {
                         ref = 0.0f; // no power step input
