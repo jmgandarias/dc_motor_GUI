@@ -199,6 +199,12 @@ void ControlLoopTask(void *parameter)
     const TickType_t xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
     TickType_t xLastWakeTime = xTaskGetTickCount();                          // initialize once
 
+    float error = 0.0f;            // error for position control
+    float integral_error = 0.0f;   // integral term
+    float derivative_error = 0.0f; // derivative term
+    float actuation = 0.0f;        // PID control output
+    float error_prev = 0.0f;       // initialize previous error
+
     // This task can be used for more complex control algorithms if needed
     while (true)
     {
@@ -242,11 +248,191 @@ void ControlLoopTask(void *parameter)
 
             if (control_mode == "position")
             {
-                // Position control logic here
+                if (input_signal == "step")
+                {
+                    if ((current_time < experiment_duration * 1000.0 / 2))
+                    {
+                        ref = 0.0f; // no power step input
+                    }
+                    else if ((current_time >= experiment_duration * 1000.0 / 2))
+                    {
+                        ref = PI; // step to half revolution (pi radians)
+                    }
+                    else if (current_time > experiment_duration * 1000.0)
+                    {
+                        finishExperiment();
+                        error = 0.0f;            // error for position control
+                        integral_error = 0.0f;   // integral term
+                        derivative_error = 0.0f; // derivative term
+                        actuation = 0.0f;        // PID control output
+                        error_prev = 0.0f;       // initialize previous error
+                    }
+                }
+                else if (input_signal == "sine")
+                {
+                    // Sine wave input logic here
+                }
+                else if (input_signal == "square")
+                {
+                    // Square wave input logic here
+                }
+                else if (input_signal == "ramp")
+                {
+                    // ramp input logic here (e.g., read from serial or buttons)
+                    if (current_time <= experiment_duration * 1000.0)
+                    {
+                        ref = current_time / (experiment_duration * 1000.0) * 2 * PI; // linear ramp from 0 to 2*pi radians over experiment duration
+                    }
+                    else
+                    {
+                        finishExperiment();
+                        error = 0.0f;            // error for position control
+                        integral_error = 0.0f;   // integral term
+                        derivative_error = 0.0f; // derivative term
+                        actuation = 0.0f;        // PID control output
+                        error_prev = 0.0f;       // initialize previous error
+                    }
+                }
+                else if (input_signal == "manual")
+                {
+                    if (current_time > experiment_duration * 1000.0)
+                    {
+                        finishExperiment();
+                        error = 0.0f;            // error for position control
+                        integral_error = 0.0f;   // integral term
+                        derivative_error = 0.0f; // derivative term
+                        actuation = 0.0f;        // PID control output
+                        error_prev = 0.0f;       // initialize previous error
+                    }
+                }
+
+                // Position control using PID
+                error = ref - pos;                                                          // error for position control
+                integral_error = integral_error + error;                                    // integral term
+                derivative_error = error - error_prev;                                      // derivative term
+                actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
+                error_prev = error;                                                         // store error for next iteration
+
+                if (actuation >= 0)
+                {                              // CW direction
+                    ledcWrite(PWM_CCW_PIN, 0); // CCW PWM to 0
+                    if ((actuation > pwm_max))
+                    { // Saturate at max PWM value
+                        ledcWrite(PWM_CW_PIN, pwm_max);
+                    }
+                    else
+                    {
+                        ledcWrite(PWM_CW_PIN, actuation);
+                    }
+                }
+                else
+                {                             // CCW direction
+                    actuation = -actuation;   // change sign of actuation signal
+                    ledcWrite(PWM_CW_PIN, 0); // ensure CW PWM is set to 0
+                    if ((actuation > pwm_max))
+                    { // Saturate at max PWM value
+                        ledcWrite(PWM_CCW_PIN, pwm_max);
+                    }
+                    else
+                    {
+                        ledcWrite(PWM_CCW_PIN, actuation);
+                    }
+                }
+                ledcWrite(LED_PIN, actuation); // update LED brightness based on actuation value
             }
             else if (control_mode == "velocity")
             {
-                // Velocity control logic here
+                if (input_signal == "step")
+                {
+                    if ((current_time < experiment_duration * 1000.0 / 2))
+                    {
+                        ref = 0.0f; // no power step input
+                    }
+                    else if ((current_time >= experiment_duration * 1000.0 / 2))
+                    {
+                        ref = PI; // step to half revolution (pi radians)
+                    }
+                    else if (current_time > experiment_duration * 1000.0)
+                    {
+                        finishExperiment();
+                        error = 0.0f;            // error for velocity control
+                        integral_error = 0.0f;   // integral term
+                        derivative_error = 0.0f; // derivative term
+                        actuation = 0.0f;        // PID control output
+                        error_prev = 0.0f;       // initialize previous error
+                    }
+                }
+                else if (input_signal == "sine")
+                {
+                    // Sine wave input logic here
+                }
+                else if (input_signal == "square")
+                {
+                    // Square wave input logic here
+                }
+                else if (input_signal == "ramp")
+                {
+                    // ramp input logic here (e.g., read from serial or buttons)
+                    if (current_time <= experiment_duration * 1000.0)
+                    {
+                        ref = current_time / (experiment_duration * 1000.0) * 2 * PI; // linear ramp from 0 to 2*pi radians over experiment duration
+                    }
+                    else
+                    {
+                        finishExperiment();
+                        error = 0.0f;            // error for velocity control
+                        integral_error = 0.0f;   // integral term
+                        derivative_error = 0.0f; // derivative term
+                        actuation = 0.0f;        // PID control output
+                        error_prev = 0.0f;       // initialize previous error
+                    }
+                }
+                else if (input_signal == "manual")
+                {
+                    if (current_time > experiment_duration * 1000.0)
+                    {
+                        finishExperiment();
+                        error = 0.0f;            // error for velocity control
+                        integral_error = 0.0f;   // integral term
+                        derivative_error = 0.0f; // derivative term
+                        actuation = 0.0f;        // PID control output
+                        error_prev = 0.0f;       // initialize previous error
+                    }
+                }
+
+                // Velocity control using PID
+                error = ref - vel_filtered;                                                 // error for velocity control
+                integral_error = integral_error + error;                                    // integral term
+                derivative_error = error - error_prev;                                      // derivative term
+                actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
+                error_prev = error;                                                         // store error for next iteration
+
+                if (actuation >= 0)
+                {                              // CW direction
+                    ledcWrite(PWM_CCW_PIN, 0); // CCW PWM to 0
+                    if ((actuation > pwm_max))
+                    { // Saturate at max PWM value
+                        ledcWrite(PWM_CW_PIN, pwm_max);
+                    }
+                    else
+                    {
+                        ledcWrite(PWM_CW_PIN, actuation);
+                    }
+                }
+                else
+                {                             // CCW direction
+                    actuation = -actuation;   // change sign of actuation signal
+                    ledcWrite(PWM_CW_PIN, 0); // ensure CW PWM is set to 0
+                    if ((actuation > pwm_max))
+                    { // Saturate at max PWM value
+                        ledcWrite(PWM_CCW_PIN, pwm_max);
+                    }
+                    else
+                    {
+                        ledcWrite(PWM_CCW_PIN, actuation);
+                    }
+                }
+                ledcWrite(LED_PIN, actuation); // update LED brightness based on actuation value
             }
             else
             {
