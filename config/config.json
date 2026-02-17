@@ -1,10 +1,10 @@
 {
-    "control_mode": "position",
+    "control_mode": "velocity",
     "input_signal": "step",
-    "ref": 0.0,
-    "Kp": 400.0,
-    "Ki": 1.0,
-    "Kd": 0.8,
+    "ref": 30.0,
+    "Kp": 600.0,
+    "Ki": 0.0,
+    "Kd": 0.0,
     "experiment_duration": 5.0,
-    "sampling_rate": 0.01
+    "sampling_rate": 0.001
 }

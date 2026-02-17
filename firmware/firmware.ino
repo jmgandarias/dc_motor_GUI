@@ -196,8 +196,8 @@ void loop()
 
 void ControlLoopTask(void *parameter)
 {
-    const TickType_t xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
-    TickType_t xLastWakeTime = xTaskGetTickCount();                          // initialize once
+    TickType_t xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
+    TickType_t xLastWakeTime = xTaskGetTickCount();                    // initialize once
 
     float error = 0.0f;            // error for position control
     float integral_error = 0.0f;   // integral term
@@ -208,6 +208,8 @@ void ControlLoopTask(void *parameter)
     // This task can be used for more complex control algorithms if needed
     while (true)
     {
+        xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
+
         // Start experiment when flag is set by ConfigTask upon receiving "START" command
         if (experiment_running)
         {
@@ -443,9 +445,9 @@ void ControlLoopTask(void *parameter)
                     static bool step_sent = false;
                     if ((current_time >= experiment_duration * 1000.0 / 2) && !step_sent)
                     {
-                        pwm = pwm_max;               // full power step input
-                        ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
-                        ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
+                        pwm = pwm_max;              // full power step input
+                        ledcWrite(PWM_CW_PIN, pwm); // writing to CW (clockwise)
+                        ledcWrite(PWM_CCW_PIN, 0);  // stopping CCW (counter-clockwise)
                         step_sent = true;
                     }
                     else if (current_time > experiment_duration * 1000.0)
@@ -467,8 +469,8 @@ void ControlLoopTask(void *parameter)
                     if (current_time <= experiment_duration * 1000.0)
                     {
                         pwm = current_time / (experiment_duration * 1000.0) * pwm_max; // linear ramp from 0 to max over experiment duration
-                        ledcWrite(PWM_CCW_PIN, pwm);                                   // writing to CCW (counter-clockwise)
-                        ledcWrite(PWM_CW_PIN, 0);                                      // stopping CW (clockwise)
+                        ledcWrite(PWM_CW_PIN, pwm);                                    // writing to CW (clockwise)
+                        ledcWrite(PWM_CCW_PIN, 0);                                     // stopping CCW (counter-clockwise)
                     }
                     else
                     {
@@ -482,8 +484,8 @@ void ControlLoopTask(void *parameter)
                         pwm = ref / 100 * pwm_max; // convert reference percentage to PWM value
                         if (ref > 0)
                         {
-                            ledcWrite(PWM_CCW_PIN, pwm); // writing to CCW (counter-clockwise)
-                            ledcWrite(PWM_CW_PIN, 0);    // stopping CW (clockwise)
+                            ledcWrite(PWM_CW_PIN, pwm); // writing to CW (counter-clockwise)
+                            ledcWrite(PWM_CCW_PIN, 0);  // stopping CCW (clockwise)
                         }
                         else
                         {
@@ -510,13 +512,14 @@ void ControlLoopTask(void *parameter)
 
 void ConfigTask(void *parameter)
 {
-    const TickType_t xPeriod = pdMS_TO_TICKS(20);   // 20 ms period
+    TickType_t xPeriod = pdMS_TO_TICKS(20);         // 4 times the sampling rate to allow for communiation
     TickType_t xLastWakeTime = xTaskGetTickCount(); // initialize once
 
     // This task can be used for more complex configuration handling if needed
     while (true)
     {
-        // Read serial input (non-blocking)
+        // xPeriod = pdMS_TO_TICKS(4 * sampling_rate); // 4 times the sampling rate to allow for communiation
+        //  Read serial input (non-blocking)
         while (Serial.available())
         {
             char c = Serial.read();
@@ -653,7 +656,7 @@ void ConfigTask(void *parameter)
                             Serial.print("  experiment_duration: ");
                             Serial.println(experiment_duration, 2);
                             Serial.print("  sampling_rate: ");
-                            Serial.println(sampling_rate, 2);
+                            Serial.println(sampling_rate, 3);
 
                             // Validate values and set defaults if invalid
                             if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")
