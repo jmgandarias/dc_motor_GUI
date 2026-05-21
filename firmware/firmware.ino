@@ -67,8 +67,12 @@ const float pulses_per_revolution = 4400.0;                     // encoder pulse
 const float radians_per_pulse = 2 * PI / pulses_per_revolution; // conversion factor pulses -> radians
 
 // Velocity moving-average filter (FIR)
-const int VEL_MA_WINDOW = 50; // number of samples in the moving average (10 samples ≈ 100 ms at 10 ms period)
-float vel_ma_buf[VEL_MA_WINDOW];
+// Keep an approximately constant time horizon: window_samples ~= horizon / sampling_rate.
+// Examples: sampling_rate=0.01 -> 5 samples, sampling_rate=0.001 -> 50 samples.
+const float VEL_MA_HORIZON_S = 0.05f; // 50 ms smoothing horizon
+const int VEL_MA_WINDOW_MAX = 50;      // upper bound for memory and CPU usage
+volatile int VEL_MA_WINDOW = 5;        // effective window used by the filter
+float vel_ma_buf[VEL_MA_WINDOW_MAX];
 int vel_ma_idx = 0;
 int vel_ma_count = 0;
 float vel_ma_sum = 0.0f;
@@ -116,6 +120,39 @@ void IRAM_ATTR ISRENCODER_B()
     }
 }
 
+void resetVelocityFilterState()
+{
+    vel_ma_idx = 0;
+    vel_ma_count = 0;
+    vel_ma_sum = 0.0f;
+    for (int i = 0; i < VEL_MA_WINDOW_MAX; ++i)
+    {
+        vel_ma_buf[i] = 0.0f;
+    }
+}
+
+void updateVelocityFilterWindowFromSamplingRate()
+{
+    float sr = sampling_rate;
+    if (sr <= 1e-6f)
+    {
+        sr = 0.001f;
+    }
+
+    int w = (int)((VEL_MA_HORIZON_S / sr) + 0.5f); // rounded to nearest int
+    if (w < 1)
+    {
+        w = 1;
+    }
+    else if (w > VEL_MA_WINDOW_MAX)
+    {
+        w = VEL_MA_WINDOW_MAX;
+    }
+
+    VEL_MA_WINDOW = w;
+    resetVelocityFilterState();
+}
+
 void finishExperiment()
 {
     // End of experiment: stop motor and reset state
@@ -129,19 +166,14 @@ void finishExperiment()
     counter = 0;
 
     // Reset moving-average filter state
-    vel_ma_idx = 0;
-    vel_ma_count = 0;
-    vel_ma_sum = 0.0f;
-    for (int i = 0; i < VEL_MA_WINDOW; ++i)
-    {
-        vel_ma_buf[i] = 0.0f;
-    }
+    resetVelocityFilterState();
 }
 
 void setup()
 {
     M5.begin();
     Serial.begin(500000); // high baud for fast data logging
+    updateVelocityFilterWindowFromSamplingRate();
 
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
@@ -237,11 +269,20 @@ void ControlLoopTask(void *parameter)
                 vel = counts_per_sec * radians_per_pulse;
 
                 // Moving average filter over last VEL_MA_WINDOW velocity samples
+                int window = VEL_MA_WINDOW;
+                if (window < 1)
+                {
+                    window = 1;
+                }
+                else if (window > VEL_MA_WINDOW_MAX)
+                {
+                    window = VEL_MA_WINDOW_MAX;
+                }
                 vel_ma_sum -= vel_ma_buf[vel_ma_idx];
                 vel_ma_buf[vel_ma_idx] = vel;
                 vel_ma_sum += vel;
-                vel_ma_idx = (vel_ma_idx + 1) % VEL_MA_WINDOW;
-                if (vel_ma_count < VEL_MA_WINDOW)
+                vel_ma_idx = (vel_ma_idx + 1) % window;
+                if (vel_ma_count < window)
                 {
                     vel_ma_count++;
                 }
@@ -308,10 +349,15 @@ void ControlLoopTask(void *parameter)
                     }
                 }
 
-                // Position control using PID
-                error = ref - pos;                                                          // error for position control
-                integral_error = integral_error + error;                                    // integral term
-                derivative_error = error - error_prev;                                      // derivative term
+                // Position control using PID with real discrete-time dt
+                error = ref - pos; // error for position control
+                float dt_pid = elapsed_time;
+                if (dt_pid <= 1e-6f)
+                {
+                    dt_pid = sampling_rate;
+                }
+                integral_error = integral_error + (error * dt_pid);                          // integral term: e*dt
+                derivative_error = (error - error_prev) / dt_pid;                            // derivative term: de/dt
                 actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
                 pwm = actuation;                                                            // Storage of actuation value for sending via serial
                 error_prev = error;                                                         // store error for next iteration
@@ -403,10 +449,15 @@ void ControlLoopTask(void *parameter)
                     }
                 }
 
-                // Velocity control using PID
-                error = ref - vel_filtered;                                                 // error for velocity control
-                integral_error = integral_error + error;                                    // integral term
-                derivative_error = error - error_prev;                                      // derivative term
+                // Velocity control using PID with real discrete-time dt
+                error = ref - vel_filtered; // error for velocity control
+                float dt_pid = elapsed_time;
+                if (dt_pid <= 1e-6f)
+                {
+                    dt_pid = sampling_rate;
+                }
+                integral_error = integral_error + (error * dt_pid);                          // integral term: e*dt
+                derivative_error = (error - error_prev) / dt_pid;                            // derivative term: de/dt
                 actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
                 pwm = actuation;                                                            // Storage of actuation value for sending via serial
                 error_prev = error;                                                         // store error for next iteration
@@ -547,13 +598,7 @@ void ConfigTask(void *parameter)
                             last_time = 0;        // keep behavior consistent: current_time will be small after t_ini
 
                             // Reset moving-average filter state
-                            vel_ma_idx = 0;
-                            vel_ma_count = 0;
-                            vel_ma_sum = 0.0f;
-                            for (int i = 0; i < VEL_MA_WINDOW; ++i)
-                            {
-                                vel_ma_buf[i] = 0.0f;
-                            }
+                            resetVelocityFilterState();
                         }
                     }
                     // Check if it's an END command
@@ -572,13 +617,7 @@ void ConfigTask(void *parameter)
                             counter = 0;
 
                             // Reset moving-average filter state
-                            vel_ma_idx = 0;
-                            vel_ma_count = 0;
-                            vel_ma_sum = 0.0f;
-                            for (int i = 0; i < VEL_MA_WINDOW; ++i)
-                            {
-                                vel_ma_buf[i] = 0.0f;
-                            }
+                            resetVelocityFilterState();
                         }
                     }
                     // Check if a number
@@ -640,6 +679,7 @@ void ConfigTask(void *parameter)
                             {
                                 // FIX: assign sampling_rate (was mistakenly assigning to Kd)
                                 sampling_rate = doc["sampling_rate"].as<float>();
+                                updateVelocityFilterWindowFromSamplingRate();
                             }
 
                             Serial.println("Config received:");
@@ -657,6 +697,8 @@ void ConfigTask(void *parameter)
                             Serial.println(experiment_duration, 2);
                             Serial.print("  sampling_rate: ");
                             Serial.println(sampling_rate, 3);
+                            Serial.print("  vel_ma_window: ");
+                            Serial.println(VEL_MA_WINDOW);
 
                             // Validate values and set defaults if invalid
                             if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")

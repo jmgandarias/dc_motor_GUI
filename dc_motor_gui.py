@@ -899,7 +899,7 @@ class ControlGUI(tk.Tk):
             # Write header + data rows
             with open(out_path, mode="w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["power", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "ref", "time_ms"])
+                writer.writerow(["voltage", "pos_rad", "vel_rad_per_s", "vel_filtered_rad_per_s", "ref", "time_ms"])
                 writer.writerows(rows)
             self._log(f"Saved {len(rows)} rows to: {out_path}")
             messagebox.showinfo("Success", f"Data saved successfully to:\n{out_path}")
@@ -968,24 +968,24 @@ class ControlGUI(tk.Tk):
         self.pause_btn = ttk.Button(toolbar, text="Pause Plot", command=self._toggle_plot_pause)
         self.pause_btn.pack(side="left")
 
-        # Series selection checkboxes (include Power)
+        # Series selection checkboxes (include Voltage)
         self.show_power_var = tk.IntVar(value=1)
         self.show_pos_var = tk.IntVar(value=1)
         self.show_vel_var = tk.IntVar(value=1)
         self.show_velf_var = tk.IntVar(value=1)
 
-        ttk.Checkbutton(toolbar, text="Power", variable=self.show_power_var, command=self._on_series_toggle).pack(side="left", padx=6)
+        ttk.Checkbutton(toolbar, text="Voltage", variable=self.show_power_var, command=self._on_series_toggle).pack(side="left", padx=6)
         ttk.Checkbutton(toolbar, text="Position", variable=self.show_pos_var, command=self._on_series_toggle).pack(side="left", padx=6)
         ttk.Checkbutton(toolbar, text="Velocity", variable=self.show_vel_var, command=self._on_series_toggle).pack(side="left", padx=6)
         ttk.Checkbutton(toolbar, text="Velocity (filtered)", variable=self.show_velf_var, command=self._on_series_toggle).pack(side="left", padx=6)
 
-        # Use 3 rows: Power (top), Position (middle), Velocity (bottom). Share x-axis.
+        # Use 3 rows: Voltage (top), Position (middle), Velocity (bottom). Share x-axis.
         self.fig = Figure(figsize=(6, 5), dpi=100)
         self.ax_power = self.fig.add_subplot(3, 1, 1)
         self.ax_pos = self.fig.add_subplot(3, 1, 2, sharex=self.ax_power)
         self.ax_vel = self.fig.add_subplot(3, 1, 3, sharex=self.ax_power)
 
-        self.ax_power.set_ylabel("power [V]")
+        self.ax_power.set_ylabel("Voltage [V]")
         self.ax_pos.set_ylabel("pos [rad]")
         self.ax_vel.set_ylabel("vel [rad/s]")
         self.ax_vel.set_xlabel("time [s]")
@@ -993,7 +993,7 @@ class ControlGUI(tk.Tk):
         self.ax_pos.grid(True, linestyle=":", alpha=0.6)
         self.ax_vel.grid(True, linestyle=":", alpha=0.6)
 
-        (self.line_power,) = self.ax_power.plot([], [], color="tab:red", label="power", linewidth=1.5, antialiased=True)
+        (self.line_power,) = self.ax_power.plot([], [], color="tab:red", label="Voltage", linewidth=1.5, antialiased=True)
         (self.line_pos,) = self.ax_pos.plot([], [], color="tab:blue", label="pos", linewidth=1.5, antialiased=True)
         (self.line_pos_ref,) = self.ax_pos.plot([], [], color="tab:cyan", label="ref", linewidth=1.5, linestyle="--", antialiased=True)
         (self.line_vel,) = self.ax_vel.plot([], [], color="tab:orange", label="vel", linewidth=1.5, antialiased=True)
