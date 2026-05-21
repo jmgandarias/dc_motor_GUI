@@ -134,7 +134,8 @@ class ControlGUI(tk.Tk):
             "Ki": 0.0,
             "Kd": 0.0,
             "experiment_duration": 10.0,
-            "sampling_rate": 0.01
+            "sampling_rate": 0.01,
+            "dead_zone_compensation": True
         }
         
         try:
@@ -301,6 +302,15 @@ class ControlGUI(tk.Tk):
         self.sampling_rate_entry = ttk.Entry(config_frame, width=10)
         self.sampling_rate_entry.insert(0, "0.01")
         self.sampling_rate_entry.grid(row=2, column=3, sticky="w", **pad)
+
+        self.dead_zone_comp_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            config_frame,
+            text="Dead-zone compensation",
+            variable=self.dead_zone_comp_var,
+            onvalue=True,
+            offvalue=False,
+        ).grid(row=0, column=8, sticky="w", **pad)
 
         # Button to send config (updates file and sends to ESP32)
         self.send_config_btn = ttk.Button(
@@ -622,7 +632,8 @@ class ControlGUI(tk.Tk):
                 "Ki": ki,
                 "Kd": kd,
                 "experiment_duration": exp_duration,
-                "sampling_rate": sampling_rate
+                "sampling_rate": sampling_rate,
+                "dead_zone_compensation": bool(self.dead_zone_comp_var.get())
             }
             
             # First, update the config.json file

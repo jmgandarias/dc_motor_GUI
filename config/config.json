@@ -1,10 +1,11 @@
 {
-    "control_mode": "open-loop",
+    "control_mode": "position",
     "input_signal": "step",
     "ref": 0.0,
-    "Kp": 1.0,
+    "Kp": 600.0,
     "Ki": 0.0,
-    "Kd": 0.0,
-    "experiment_duration": 4.0,
-    "sampling_rate": 0.005
+    "Kd": 30.0,
+    "experiment_duration": 2.0,
+    "sampling_rate": 0.01,
+    "dead_zone_compensation": true
 }

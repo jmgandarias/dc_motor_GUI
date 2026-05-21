@@ -46,6 +46,7 @@ float sampling_rate = 0.001;
 volatile float Kp = 1.0;
 volatile float Ki = 0.0;
 volatile float Kd = 0.0;
+volatile bool dead_zone_compensation = true;
 
 float ref = 0.0f; // reference value for control (e.g., target position or velocity)
 
@@ -54,6 +55,10 @@ const int frequency = 10000;               // PWM frequency in Hz
 const int resolution = 11;                 // PWM resolution in bits
 const int pwm_max = (1 << resolution) - 1; // maximum duty (2048 for 11-bit)
 const int voltage_max = 12;                // maximum voltage corresponding to pwm_max (for reference)
+const float zero_band_voltage = 0.05f;      // around-zero band mapped to 0V to avoid chatter
+const float dead_zone_voltage = 2.0f;      // motor dead-zone compensation threshold in volts
+const float zero_band_pwm = (zero_band_voltage / (float)voltage_max) * (float)pwm_max;
+const float dead_zone_pwm = (dead_zone_voltage / (float)voltage_max) * (float)pwm_max;
 
 // Encoder counter
 volatile int counter = 0;    // running encoder pulse count (signed)
@@ -151,6 +156,28 @@ void updateVelocityFilterWindowFromSamplingRate()
 
     VEL_MA_WINDOW = w;
     resetVelocityFilterState();
+}
+
+float applyDeadZoneCompensation(float u)
+{
+    if (!dead_zone_compensation)
+    {
+        return u;
+    }
+
+    if (u >= -zero_band_pwm && u <= zero_band_pwm)
+    {
+        return 0.0f;
+    }
+    else if (u > 0.0f && u < dead_zone_pwm)
+    {
+        return dead_zone_pwm;
+    }
+    else if (u < 0.0f && u > -dead_zone_pwm)
+    {
+        return -dead_zone_pwm;
+    }
+    return u;
 }
 
 void finishExperiment()
@@ -349,16 +376,12 @@ void ControlLoopTask(void *parameter)
                     }
                 }
 
-                // Position control using PID with real discrete-time dt
-                error = ref - pos; // error for position control
-                float dt_pid = elapsed_time;
-                if (dt_pid <= 1e-6f)
-                {
-                    dt_pid = sampling_rate;
-                }
-                integral_error = integral_error + (error * dt_pid);                          // integral term: e*dt
-                derivative_error = (error - error_prev) / dt_pid;                            // derivative term: de/dt
+                // Position control using PID
+                error = ref - pos;                                                          // error for position control
+                integral_error = integral_error + error;                                    // integral term
+                derivative_error = error - error_prev;                                      // derivative term
                 actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
+                actuation = applyDeadZoneCompensation(actuation);                           // compensate motor dead-zone (+/-2V)
                 pwm = actuation;                                                            // Storage of actuation value for sending via serial
                 error_prev = error;                                                         // store error for next iteration
 
@@ -449,16 +472,12 @@ void ControlLoopTask(void *parameter)
                     }
                 }
 
-                // Velocity control using PID with real discrete-time dt
-                error = ref - vel_filtered; // error for velocity control
-                float dt_pid = elapsed_time;
-                if (dt_pid <= 1e-6f)
-                {
-                    dt_pid = sampling_rate;
-                }
-                integral_error = integral_error + (error * dt_pid);                          // integral term: e*dt
-                derivative_error = (error - error_prev) / dt_pid;                            // derivative term: de/dt
+                // Velocity control using PID
+                error = ref - vel_filtered;                                                 // error for velocity control
+                integral_error = integral_error + error;                                    // integral term
+                derivative_error = error - error_prev;                                      // derivative term
                 actuation = (Kp * error) + (Ki * integral_error) + (Kd * derivative_error); // PID control output
+                actuation = applyDeadZoneCompensation(actuation);                           // compensate motor dead-zone (+/-2V)
                 pwm = actuation;                                                            // Storage of actuation value for sending via serial
                 error_prev = error;                                                         // store error for next iteration
 
@@ -681,6 +700,10 @@ void ConfigTask(void *parameter)
                                 sampling_rate = doc["sampling_rate"].as<float>();
                                 updateVelocityFilterWindowFromSamplingRate();
                             }
+                            if (doc.containsKey("dead_zone_compensation"))
+                            {
+                                dead_zone_compensation = doc["dead_zone_compensation"].as<bool>();
+                            }
 
                             Serial.println("Config received:");
                             Serial.print("  control_mode: ");
@@ -699,6 +722,8 @@ void ConfigTask(void *parameter)
                             Serial.println(sampling_rate, 3);
                             Serial.print("  vel_ma_window: ");
                             Serial.println(VEL_MA_WINDOW);
+                            Serial.print("  dead_zone_compensation: ");
+                            Serial.println(dead_zone_compensation ? "true" : "false");
 
                             // Validate values and set defaults if invalid
                             if (control_mode != "open-loop" && control_mode != "position" && control_mode != "velocity")
