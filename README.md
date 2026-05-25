@@ -1,8 +1,7 @@
-# DC Motor GUI
+# DC Open-source, portable, and low-cost educational kit for engineering control courses
 
 <img src="images/icon.svg" alt="DC Motor GUI logo" width="140"/>
 
-Open-source, portable, and low-cost educational kit for engineering control courses.
 
 [![GitHub stars](https://img.shields.io/github/stars/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/stargazers)
 [![GitHub forks](https://img.shields.io/github/forks/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/network/members)
@@ -29,7 +28,7 @@ The project provides a reproducible and practical framework so students can:
 The system has three layers:
 
 1. ESP32/M5Core2 firmware.
-2. Serial communication between PC and ESP32.
+2. Serial communication between PC and the selected board (ESP32 or M5Core2).
 3. Python GUI for operation, visualization, and storage.
 
 ```mermaid
@@ -102,6 +101,7 @@ Main hardware blocks:
 - Control and acquisition: ESP32/M5Core2 running the firmware.
 - Integration elements: prototyping board, DC jack input, and dedicated ON/OFF switch.
 - Mechanical parts: [base](https://cad.onshape.com/documents/68744c2d9d57a115c5be415b/w/ec99c6ff019e2c161f3202af/e/f19522d12bc2ccb0db4a4fea) and [wheel](https://cad.onshape.com/documents/8acf9963d988a95b0fc5bd3a/w/932db805f70a48a786458306/e/d399924528139fa77ffa1802) CAD files are publicly available.
+- The CAD base is designed for the M5Core2-based assembly.
 
 Important operating note:
 - This setup is designed to run connected to a PC through USB serial, with the GUI managing configuration, start/stop commands, and data logging.
@@ -121,6 +121,10 @@ This section keeps the full step-by-step firmware setup flow.
 
 Download and install from:
 https://www.arduino.cc/en/software/
+
+### M5Core2-only preparation (steps 2 to 5)
+
+The following steps (2 to 5) apply only to the M5Core2 workflow. If you are using a standard ESP32 board, go directly to step 6 and use `firmware/firmware_ESP32.ino`.
 
 ### 2) Install M5Stack board package
 
