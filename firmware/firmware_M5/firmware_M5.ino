@@ -292,6 +292,7 @@ void finishExperiment()
     Serial.println("END");
     digitalWrite(LED_PIN, LOW);
     experiment_running = false;
+    pwm = 0;
     last_count = 0;
     last_time = 0;
     counter = 0;
@@ -601,15 +602,19 @@ void ControlLoopTask(void *parameter)
             {
                 if (input_signal == "step")
                 {
-                    static bool step_sent = false;
-                    if ((current_time >= experiment_duration * 1000.0 / 2) && !step_sent)
+                    if (current_time < experiment_duration * 1000.0 / 2)
+                    {
+                        pwm = 0;
+                        ledcWrite(PWM_CW_PIN, 0);
+                        ledcWrite(PWM_CCW_PIN, 0);
+                    }
+                    else if (current_time <= experiment_duration * 1000.0)
                     {
                         pwm = pwm_max;              // full power step input
                         ledcWrite(PWM_CW_PIN, pwm); // writing to CW (clockwise)
                         ledcWrite(PWM_CCW_PIN, 0);  // stopping CCW (counter-clockwise)
-                        step_sent = true;
                     }
-                    else if (current_time > experiment_duration * 1000.0)
+                    else
                     {
                         finishExperiment();
                     }
