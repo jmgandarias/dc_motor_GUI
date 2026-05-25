@@ -103,6 +103,48 @@ Main hardware blocks:
 - Mechanical parts: [base](https://cad.onshape.com/documents/68744c2d9d57a115c5be415b/w/ec99c6ff019e2c161f3202af/e/f19522d12bc2ccb0db4a4fea) and [wheel](https://cad.onshape.com/documents/8acf9963d988a95b0fc5bd3a/w/932db805f70a48a786458306/e/d399924528139fa77ffa1802) CAD files are publicly available.
 - The CAD base is designed for the M5Core2-based assembly.
 
+### Simplified Wiring (Hardware Setup)
+
+```mermaid
+flowchart LR;
+  PS[12 V Power Supply] -->|12V| HB[L298N H-Bridge];
+  HB -->|Motor power| M[DC Motor];
+
+  MCU[ESP32 / M5Core2] -->|PWM_CCW_PIN GPIO25| HB;
+  MCU -->|PWM_CW_PIN GPIO26| HB;
+
+  MCU -->|3.3V| ENC[Motor Encoder];
+  ENC -->|A channel GPIO19| MCU;
+  ENC -->|B channel GPIO27| MCU;
+
+  GND[Common GND];
+  PS --- GND;
+  HB --- GND;
+  MCU --- GND;
+  ENC --- GND;
+```
+
+Pin mapping summary:
+
+| Signal | Firmware symbol | MCU pin |
+|---|---|---|
+| H-bridge PWM (CCW) | `PWM_CCW_PIN` | GPIO25 |
+| H-bridge PWM (CW) | `PWM_CW_PIN` | GPIO26 |
+| Encoder channel A | `ENCODER_A` | GPIO19 |
+| Encoder channel B | `ENCODER_B` | GPIO27 |
+
+Connection notes:
+- The H-bridge receives 12 V from the external power supply.
+- The H-bridge motor outputs are connected to the motor power pins.
+- The ESP32/M5Core2 drives the H-bridge with two PWM signals:
+  - `PWM_CCW_PIN` on GPIO25
+  - `PWM_CW_PIN` on GPIO26
+- The motor encoder is powered from 3.3 V provided by the ESP32/M5Core2.
+- Encoder signals are connected as follows:
+  - Channel A to GPIO19 (`ENCODER_A`)
+  - Channel B to GPIO27 (`ENCODER_B`)
+- Ground must be shared by power supply, H-bridge, ESP32/M5Core2, and encoder.
+
 Important operating note:
 - This setup is designed to run connected to a PC through USB serial, with the GUI managing configuration, start/stop commands, and data logging.
 - It is not intended to operate as a fully standalone kit without a host PC.
