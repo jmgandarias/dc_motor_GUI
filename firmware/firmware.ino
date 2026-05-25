@@ -43,6 +43,11 @@ String input_signal = "step";
 float experiment_duration = 10.0;
 float sampling_rate = 0.001;
 
+const uint16_t SERIAL_COMM_HZ = 100;                          // fixed serial communication rate
+const uint32_t SERIAL_COMM_PERIOD_MS = 1000 / SERIAL_COMM_HZ; // 10 ms
+const uint16_t SERIAL_BATCH_MAX_SAMPLES = 32;                 // max samples sent per serial batch
+const uint16_t SAMPLE_QUEUE_CAPACITY = 512;                   // buffered samples between serial sends
+
 volatile float Kp = 1.0;
 volatile float Ki = 0.0;
 volatile float Kd = 0.0;
@@ -55,7 +60,7 @@ const int frequency = 10000;               // PWM frequency in Hz
 const int resolution = 11;                 // PWM resolution in bits
 const int pwm_max = (1 << resolution) - 1; // maximum duty (2048 for 11-bit)
 const int voltage_max = 12;                // maximum voltage corresponding to pwm_max (for reference)
-const float zero_band_voltage = 0.05f;      // around-zero band mapped to 0V to avoid chatter
+const float zero_band_voltage = 0.05f;     // around-zero band mapped to 0V to avoid chatter
 const float dead_zone_voltage = 2.0f;      // motor dead-zone compensation threshold in volts
 const float zero_band_pwm = (zero_band_voltage / (float)voltage_max) * (float)pwm_max;
 const float dead_zone_pwm = (dead_zone_voltage / (float)voltage_max) * (float)pwm_max;
@@ -75,8 +80,8 @@ const float radians_per_pulse = 2 * PI / pulses_per_revolution; // conversion fa
 // Keep an approximately constant time horizon: window_samples ~= horizon / sampling_rate.
 // Examples: sampling_rate=0.01 -> 5 samples, sampling_rate=0.001 -> 50 samples.
 const float VEL_MA_HORIZON_S = 0.05f; // 50 ms smoothing horizon
-const int VEL_MA_WINDOW_MAX = 50;      // upper bound for memory and CPU usage
-volatile int VEL_MA_WINDOW = 5;        // effective window used by the filter
+const int VEL_MA_WINDOW_MAX = 50;     // upper bound for memory and CPU usage
+volatile int VEL_MA_WINDOW = 5;       // effective window used by the filter
 float vel_ma_buf[VEL_MA_WINDOW_MAX];
 int vel_ma_idx = 0;
 int vel_ma_count = 0;
@@ -97,6 +102,23 @@ float pos = 0.0f;          // current position in radians
 float vel = 0.0f;          // current velocity in rad/s
 float vel_filtered = 0.0f; // filtered velocity
 uint32_t current_time = 0; // current experiment time in ms
+
+typedef struct
+{
+    float power;
+    float pos;
+    float vel;
+    float vel_filtered;
+    float ref;
+    uint32_t time_ms;
+} SampleFrame;
+
+SampleFrame sample_queue[SAMPLE_QUEUE_CAPACITY];
+volatile uint16_t sample_queue_head = 0;
+volatile uint16_t sample_queue_tail = 0;
+volatile uint16_t sample_queue_count = 0;
+volatile uint32_t sample_queue_dropped = 0;
+portMUX_TYPE sample_queue_mux = portMUX_INITIALIZER_UNLOCKED;
 
 // Encoder ISRs --------------------------------------------------------------
 // Simple quadrature decode: compare A and B to increment/decrement counter.
@@ -158,6 +180,71 @@ void updateVelocityFilterWindowFromSamplingRate()
     resetVelocityFilterState();
 }
 
+void resetSampleQueue()
+{
+    portENTER_CRITICAL(&sample_queue_mux);
+    sample_queue_head = 0;
+    sample_queue_tail = 0;
+    sample_queue_count = 0;
+    sample_queue_dropped = 0;
+    portEXIT_CRITICAL(&sample_queue_mux);
+}
+
+void enqueueSample(float power, float pos_value, float vel_value, float vel_filtered_value, float ref_value, uint32_t time_ms)
+{
+    portENTER_CRITICAL(&sample_queue_mux);
+
+    if (sample_queue_count >= SAMPLE_QUEUE_CAPACITY)
+    {
+        // Drop oldest sample when queue is full to preserve the most recent ones.
+        sample_queue_tail = (sample_queue_tail + 1) % SAMPLE_QUEUE_CAPACITY;
+        sample_queue_count--;
+        sample_queue_dropped++;
+    }
+
+    sample_queue[sample_queue_head].power = power;
+    sample_queue[sample_queue_head].pos = pos_value;
+    sample_queue[sample_queue_head].vel = vel_value;
+    sample_queue[sample_queue_head].vel_filtered = vel_filtered_value;
+    sample_queue[sample_queue_head].ref = ref_value;
+    sample_queue[sample_queue_head].time_ms = time_ms;
+
+    sample_queue_head = (sample_queue_head + 1) % SAMPLE_QUEUE_CAPACITY;
+    sample_queue_count++;
+    portEXIT_CRITICAL(&sample_queue_mux);
+}
+
+int dequeueSampleBatch(SampleFrame *out_frames, int max_frames)
+{
+    if (max_frames <= 0)
+    {
+        return 0;
+    }
+
+    int count = 0;
+    portENTER_CRITICAL(&sample_queue_mux);
+    while (sample_queue_count > 0 && count < max_frames)
+    {
+        out_frames[count] = sample_queue[sample_queue_tail];
+        sample_queue_tail = (sample_queue_tail + 1) % SAMPLE_QUEUE_CAPACITY;
+        sample_queue_count--;
+        count++;
+    }
+    portEXIT_CRITICAL(&sample_queue_mux);
+
+    return count;
+}
+
+uint32_t consumeDroppedSampleCount()
+{
+    uint32_t dropped = 0;
+    portENTER_CRITICAL(&sample_queue_mux);
+    dropped = sample_queue_dropped;
+    sample_queue_dropped = 0;
+    portEXIT_CRITICAL(&sample_queue_mux);
+    return dropped;
+}
+
 float applyDeadZoneCompensation(float u)
 {
     if (!dead_zone_compensation)
@@ -191,6 +278,7 @@ void finishExperiment()
     last_count = 0;
     last_time = 0;
     counter = 0;
+    resetSampleQueue();
 
     // Reset moving-average filter state
     resetVelocityFilterState();
@@ -220,7 +308,7 @@ void setup()
     // Create FreeRTOS tasks for control loop, configuration handling, and display updates
     xTaskCreatePinnedToCore(
         ControlLoopTask,      // Task function
-        "Control Loop",       // Task description
+        "Control loop task",  // Task description
         8192,                 // Stack size in words
         NULL,                 // Parameters
         1,                    // Priority
@@ -228,13 +316,13 @@ void setup()
         1);                   // Core ID
 
     xTaskCreatePinnedToCore(
-        ConfigTask,          // Task function
-        "Config Task",       // Task description
-        8192,                // Stack size in words
-        NULL,                // Parameters
-        1,                   // Priority
-        &config_task_handle, // Task handle
-        0);                  // Core ID
+        ConfigAndCommTask,               // Task function
+        "Config and communication task", // Task description
+        8192,                            // Stack size in words
+        NULL,                            // Parameters
+        1,                               // Priority
+        &config_task_handle,             // Task handle
+        0);                              // Core ID
 
     xTaskCreatePinnedToCore(
         DisplayTask,          // Task function
@@ -269,7 +357,7 @@ void ControlLoopTask(void *parameter)
     {
         xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
 
-        // Start experiment when flag is set by ConfigTask upon receiving "START" command
+        // Start experiment when flag is set by ConfigAndCommTask upon receiving "START" command
         if (experiment_running)
         {
             // Compute increments since last sample (counts)
@@ -337,14 +425,6 @@ void ControlLoopTask(void *parameter)
                         actuation = 0.0f;        // PID control output
                         error_prev = 0.0f;       // initialize previous error
                     }
-                }
-                else if (input_signal == "sine")
-                {
-                    // Sine wave input logic here
-                }
-                else if (input_signal == "square")
-                {
-                    // Square wave input logic here
                 }
                 else if (input_signal == "ramp")
                 {
@@ -434,14 +514,6 @@ void ControlLoopTask(void *parameter)
                         error_prev = 0.0f;       // initialize previous error
                     }
                 }
-                else if (input_signal == "sine")
-                {
-                    // Sine wave input logic here
-                }
-                else if (input_signal == "square")
-                {
-                    // Square wave input logic here
-                }
                 else if (input_signal == "ramp")
                 {
                     // ramp input logic here (e.g., read from serial or buttons)
@@ -525,14 +597,6 @@ void ControlLoopTask(void *parameter)
                         finishExperiment();
                     }
                 }
-                else if (input_signal == "sine")
-                {
-                    // Sine wave input logic here
-                }
-                else if (input_signal == "square")
-                {
-                    // Square wave input logic here
-                }
                 else if (input_signal == "ramp")
                 {
                     // ramp input logic here (e.g., read from serial or buttons)
@@ -572,6 +636,11 @@ void ControlLoopTask(void *parameter)
             }
 
             // Update last values for next iteration
+            if (experiment_running)
+            {
+                float power = pwm / (float)pwm_max * voltage_max; // convert PWM to volts
+                enqueueSample(power, pos, vel, vel_filtered, ref, current_time);
+            }
             last_count = counter;
             last_time = current_time;
         }
@@ -580,15 +649,14 @@ void ControlLoopTask(void *parameter)
     }
 }
 
-void ConfigTask(void *parameter)
+void ConfigAndCommTask(void *parameter)
 {
-    TickType_t xPeriod = pdMS_TO_TICKS(20);         // 4 times the sampling rate to allow for communiation
-    TickType_t xLastWakeTime = xTaskGetTickCount(); // initialize once
+    TickType_t xPeriod = pdMS_TO_TICKS(SERIAL_COMM_PERIOD_MS); // fixed serial communication period (100 Hz)
+    TickType_t xLastWakeTime = xTaskGetTickCount();            // initialize once
 
     // This task can be used for more complex configuration handling if needed
     while (true)
     {
-        // xPeriod = pdMS_TO_TICKS(4 * sampling_rate); // 4 times the sampling rate to allow for communiation
         //  Read serial input (non-blocking)
         while (Serial.available())
         {
@@ -617,6 +685,7 @@ void ConfigTask(void *parameter)
                             last_time = 0;        // keep behavior consistent: current_time will be small after t_ini
 
                             // Reset moving-average filter state
+                            resetSampleQueue();
                             resetVelocityFilterState();
                         }
                     }
@@ -636,6 +705,7 @@ void ConfigTask(void *parameter)
                             counter = 0;
 
                             // Reset moving-average filter state
+                            resetSampleQueue();
                             resetVelocityFilterState();
                         }
                     }
@@ -731,7 +801,7 @@ void ConfigTask(void *parameter)
                                 Serial.println("Invalid control_mode, using default: open-loop");
                                 control_mode = "open-loop"; // default
                             }
-                            if (input_signal != "step" && input_signal != "sine" && input_signal != "square" && input_signal != "ramp" && input_signal != "manual")
+                            if (input_signal != "step" && input_signal != "ramp" && input_signal != "manual")
                             {
                                 Serial.println("Invalid input_signal, using default: step");
                                 input_signal = "step"; // default
@@ -750,8 +820,41 @@ void ConfigTask(void *parameter)
 
         if (experiment_running)
         {
-            float power = pwm / (float)pwm_max * voltage_max;                                                   // convert PWM to volts
-            Serial.printf("%.2f;%.4f;%.4f;%.4f; %.2f; %d\n", power, pos, vel, vel_filtered, ref, current_time); // PWM;pos;vel;vel_filtered;time
+            SampleFrame batch[SERIAL_BATCH_MAX_SAMPLES];
+            int batch_size = dequeueSampleBatch(batch, SERIAL_BATCH_MAX_SAMPLES);
+
+            if (batch_size > 0)
+            {
+                DynamicJsonDocument out_doc(2048 + (batch_size * 80));
+                out_doc["type"] = "DATA_BATCH";
+                out_doc["n"] = batch_size;
+
+                uint32_t dropped = consumeDroppedSampleCount();
+                if (dropped > 0)
+                {
+                    out_doc["dropped"] = dropped;
+                }
+
+                JsonArray power_arr = out_doc.createNestedArray("power");
+                JsonArray pos_arr = out_doc.createNestedArray("pos");
+                JsonArray vel_arr = out_doc.createNestedArray("vel");
+                JsonArray vel_filtered_arr = out_doc.createNestedArray("vel_filtered");
+                JsonArray ref_arr = out_doc.createNestedArray("ref");
+                JsonArray time_arr = out_doc.createNestedArray("time_ms");
+
+                for (int i = 0; i < batch_size; ++i)
+                {
+                    power_arr.add(batch[i].power);
+                    pos_arr.add(batch[i].pos);
+                    vel_arr.add(batch[i].vel);
+                    vel_filtered_arr.add(batch[i].vel_filtered);
+                    ref_arr.add(batch[i].ref);
+                    time_arr.add(batch[i].time_ms);
+                }
+
+                serializeJson(out_doc, Serial);
+                Serial.println();
+            }
         }
 
         vTaskDelayUntil(&xLastWakeTime, xPeriod); // Sleep until next cycle

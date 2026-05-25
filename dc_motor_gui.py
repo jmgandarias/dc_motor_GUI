@@ -269,7 +269,7 @@ class ControlGUI(tk.Tk):
             config_frame,
             width=20,
             state="readonly",
-            values=["step", "sine", "square", "ramp", "manual"]
+            values=["step", "ramp", "manual"]
         )
         self.input_signal_cmb.set("step")
         self.input_signal_cmb.grid(row=1, column=1, sticky="w", **pad)
@@ -786,12 +786,11 @@ class ControlGUI(tk.Tk):
     def _handle_line(self, line: str):
         """Process a single text line from the ESP32.
 
-                Expected data line format: "power;pos;vel;vel_filtered;time"
-          - power: float (volts)
-          - pos: float (radians)
-                    - vel: float (rad/s)
-                    - vel_filtered: float (rad/s)
-                    - time: float (milliseconds)
+                Supported data line formats:
+                - Legacy CSV-like row: "power;pos;vel;vel_filtered;ref;time_ms"
+                - JSON batch row with vectors:
+                    {"type":"DATA_BATCH","power":[...],"pos":[...],"vel":[...],
+                     "vel_filtered":[...],"ref":[...],"time_ms":[...]} 
 
         Special control lines:
           - "READY": device readiness handshake; recorded in self.ready_seen and
@@ -800,8 +799,8 @@ class ControlGUI(tk.Tk):
 
         This function:
         - Always posts the raw line to the UI log via lines_queue.
-        - If collecting==True and the line matches the expected 4-field format,
-          parses the row and appends it to data_rows under data_lock.
+                - If collecting==True and the line matches either supported data format,
+                    parses rows and appends them to data_rows under data_lock.
         - Ignores malformed lines silently.
         """
         # Echo every line in the log (UI thread will display)
@@ -829,25 +828,75 @@ class ControlGUI(tk.Tk):
         if not self.collecting:
             return
 
-        # Parse semicolon-separated fields
+        # Parse legacy semicolon-separated fields first (backward compatibility).
         parts = line.split(";")
-        if len(parts) != 6:
-            return  # ignore malformed lines
+        if len(parts) == 6:
+            try:
+                # Accept integer or float-looking values, be tolerant to formatting
+                power = float(parts[0])
+                pos = float(parts[1])
+                vel = float(parts[2])
+                velf = float(parts[3])
+                ref = float(parts[4])
+                tms = float(parts[5])  # milliseconds reported by ESP32
+            except ValueError:
+                return
+
+            with self.data_lock:
+                self.data_rows.append([power, pos, vel, velf, ref, tms])
+            return
+
+        # Parse new JSON batched payload.
+        if not line.startswith("{"):
+            return
 
         try:
-            # Accept integer or float-looking power, be tolerant to formatting
-            power = float(parts[0])
-            pos = float(parts[1])
-            vel = float(parts[2])
-            velf = float(parts[3])
-            ref = float(parts[4])
-            tms = float(parts[5])  # milliseconds reported by ESP32
-        except ValueError:
-            return  # ignore parse errors
+            payload = json.loads(line)
+        except Exception:
+            return
 
-        # Append row to shared buffer under lock
+        if not isinstance(payload, dict) or payload.get("type") != "DATA_BATCH":
+            return
+
+        power_vec = payload.get("power")
+        pos_vec = payload.get("pos")
+        vel_vec = payload.get("vel")
+        velf_vec = payload.get("vel_filtered")
+        ref_vec = payload.get("ref")
+        time_vec = payload.get("time_ms")
+
+        vectors = [power_vec, pos_vec, vel_vec, velf_vec, ref_vec, time_vec]
+        if not all(isinstance(v, list) for v in vectors):
+            return
+
+        n = min(len(power_vec), len(pos_vec), len(vel_vec), len(velf_vec), len(ref_vec), len(time_vec))
+        if n <= 0:
+            return
+
+        parsed_rows = []
+        for i in range(n):
+            try:
+                parsed_rows.append([
+                    float(power_vec[i]),
+                    float(pos_vec[i]),
+                    float(vel_vec[i]),
+                    float(velf_vec[i]),
+                    float(ref_vec[i]),
+                    float(time_vec[i]),
+                ])
+            except (TypeError, ValueError):
+                # Skip malformed samples while keeping the order of valid samples.
+                continue
+
+        if not parsed_rows:
+            return
+
         with self.data_lock:
-            self.data_rows.append([power, pos, vel, velf, ref, tms])
+            self.data_rows.extend(parsed_rows)
+
+        dropped = payload.get("dropped")
+        if isinstance(dropped, (int, float)) and dropped > 0:
+            self.lines_queue.put(("log", f"[WARN] Device dropped samples: {int(dropped)}"))
 
     # -------------------- Save CSV --------------------
     def _save_csv(self):
