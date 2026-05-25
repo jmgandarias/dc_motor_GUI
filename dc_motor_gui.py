@@ -547,12 +547,8 @@ class ControlGUI(tk.Tk):
             self.status_var.set("Saved.")
 
     def _on_stop_without_save(self):
-        """Stop collection without saving the data, then disconnect, reconnect, and resend config."""
-        # First, stop the experiment
+        """Stop collection without saving; keep data in memory so user can save afterward."""
         self._on_stop_and_save(force_save=False)
-        
-        # Schedule the disconnect/reconnect/config sequence
-        self.after(100, self._reconnect_and_resend_config)
 
     def _on_send_config(self):
         """Update config.json file and send the configuration to the ESP32 via serial."""

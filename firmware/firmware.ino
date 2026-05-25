@@ -180,6 +180,23 @@ void updateVelocityFilterWindowFromSamplingRate()
     resetVelocityFilterState();
 }
 
+uint32_t getControlPeriodMsFromSamplingRate()
+{
+    float sr = sampling_rate;
+    if (sr <= 1e-6f)
+    {
+        sr = 0.001f;
+    }
+
+    // Round to nearest ms instead of truncating so 0.01 s maps to 10 ms, not 9 ms.
+    uint32_t period_ms = (uint32_t)((sr * 1000.0f) + 0.5f);
+    if (period_ms < 1)
+    {
+        period_ms = 1;
+    }
+    return period_ms;
+}
+
 void resetSampleQueue()
 {
     portENTER_CRITICAL(&sample_queue_mux);
@@ -343,7 +360,7 @@ void loop()
 
 void ControlLoopTask(void *parameter)
 {
-    TickType_t xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
+    TickType_t xPeriod = pdMS_TO_TICKS(getControlPeriodMsFromSamplingRate());
     TickType_t xLastWakeTime = xTaskGetTickCount();                    // initialize once
 
     float error = 0.0f;            // error for position control
@@ -355,7 +372,7 @@ void ControlLoopTask(void *parameter)
     // This task can be used for more complex control algorithms if needed
     while (true)
     {
-        xPeriod = pdMS_TO_TICKS((int)(sampling_rate * 1000.0)); // Convert sampling_rate from ms to seconds
+        xPeriod = pdMS_TO_TICKS(getControlPeriodMsFromSamplingRate());
 
         // Start experiment when flag is set by ConfigAndCommTask upon receiving "START" command
         if (experiment_running)
