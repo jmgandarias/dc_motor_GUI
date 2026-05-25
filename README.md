@@ -8,7 +8,7 @@
 [![GitHub issues](https://img.shields.io/github/issues/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/issues)
 [![License](https://img.shields.io/github/license/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/blob/main/LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/jmgandarias/dc_motor_GUI/total?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/releases)
-[![Repo views](https://komarev.com/ghpvc/?username=jmgandarias&repo=dc_motor_GUI&style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI)
+[![Repository views](https://komarev.com/ghpvc/?username=jmgandarias&repo=dc_motor_GUI&style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI)
 
 This repository combines:
 - ESP32/M5Core2 firmware for DC motor control and data acquisition.
