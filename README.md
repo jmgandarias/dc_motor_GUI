@@ -1,10 +1,15 @@
 # DC Motor GUI
 
-<p align="center">
-  <img src="images/icon.svg" alt="DC Motor GUI logo" width="140"/>
-</p>
+<img src="images/icon.svg" alt="DC Motor GUI logo" width="140"/>
 
-Educational toolkit for laboratory sessions in Control Engineering, Industrial Informatics, and Robotics courses.
+Open-source, portable, and low-cost educational kit for engineering control courses.
+
+[![GitHub stars](https://img.shields.io/github/stars/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/issues)
+[![License](https://img.shields.io/github/license/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/blob/main/LICENSE)
+[![Downloads](https://img.shields.io/github/downloads/jmgandarias/dc_motor_GUI/total?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/releases)
+[![Repo views](https://komarev.com/ghpvc/?username=jmgandarias&repo=dc_motor_GUI&style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI)
 
 This repository combines:
 - ESP32/M5Core2 firmware for DC motor control and data acquisition.
@@ -43,7 +48,8 @@ flowchart LR
 |-- experiment_data/
 |   `-- *.csv
 |-- firmware/
-|   `-- firmware.ino
+|   |-- firmware_M5.ino
+|   `-- firmware_ESP32.ino
 |-- images/
 |-- dc_motor_gui.py
 |-- send_json.py
@@ -56,7 +62,8 @@ flowchart LR
 - `config/`
   - `config.json`: experiment and controller parameters generated and updated from the GUI.
 - `firmware/`
-  - `firmware.ino`: encoder reading, PWM generation, control logic, FreeRTOS tasks, and serial streaming.
+  - `firmware_M5.ino`: M5Core2 version (includes display/touch logic through `DisplayTask`).
+  - `firmware_ESP32.ino`: generic ESP32 version (no display task, no M5-specific dependencies).
 - `dc_motor_gui.py`
   - Main desktop app to connect, configure, run, stop, visualize, and save experiments.
 - `experiment_data/`
@@ -68,10 +75,14 @@ flowchart LR
 
 ### Hardware
 
-- M5Core2 (ESP32)
-- DC motor with encoder
-- Suitable power stage / motor driver
-- USB cable for PC connection
+- 12 V / 5 A power supply (the required supply depends on the motor used)
+- L298N H-bridge driver
+- 12 V DC motor
+- ESP32 or M5Core2
+- Small prototyping board
+- DC jack power connector
+- Square ON/OFF switch
+- USB cable for serial connection to the PC
 
 ### Software
 
@@ -80,9 +91,31 @@ flowchart LR
 - Python dependencies listed in `requirements.txt`
 - CP210x USB driver (if required by your OS)
 
+## Hardware Description
+
+The kit is built around a low-cost DC motor control architecture suitable for educational laboratories.
+
+<img src="images/kit_CAD.png" alt="Educational DC motor kit CAD" width="75%"/>
+
+Main hardware blocks:
+- Power stage: external 12 V supply and L298N H-bridge for motor actuation.
+- Control and acquisition: ESP32/M5Core2 running the firmware.
+- Integration elements: prototyping board, DC jack input, and dedicated ON/OFF switch.
+- Mechanical parts: [base](https://cad.onshape.com/documents/68744c2d9d57a115c5be415b/w/ec99c6ff019e2c161f3202af/e/f19522d12bc2ccb0db4a4fea) and [wheel](https://cad.onshape.com/documents/8acf9963d988a95b0fc5bd3a/w/932db805f70a48a786458306/e/d399924528139fa77ffa1802) CAD files are publicly available.
+
+Important operating note:
+- This setup is designed to run connected to a PC through USB serial, with the GUI managing configuration, start/stop commands, and data logging.
+- It is not intended to operate as a fully standalone kit without a host PC.
+
 ## Firmware Setup (Detailed)
 
 This section keeps the full step-by-step firmware setup flow.
+
+### Firmware Variants
+
+- Use `firmware/firmware_M5.ino` when your device is M5Core2.
+- Use `firmware/firmware_ESP32.ino` when using a standard ESP32 board.
+- The ESP32 variant removes `DisplayTask` and all M5 display/touch dependencies.
 
 ### 1) Install Arduino IDE
 
@@ -140,7 +173,9 @@ Compile and upload the `hello_world.ino` example from the M5Core2 library first.
 
 ### 6) Upload this project firmware
 
-1. Open `firmware/firmware.ino`.
+1. Open the firmware that matches your board:
+  - `firmware/firmware_M5.ino` for M5Core2
+  - `firmware/firmware_ESP32.ino` for standard ESP32
 2. Select board and serial port.
 3. Compile and upload.
 4. Open Serial Monitor and verify the `READY` message appears.
