@@ -1,107 +1,257 @@
 # DC Motor GUI
 
-Repo for the DC motor GUI
+<p align="center">
+  <img src="images/icon.svg" alt="DC Motor GUI logo" width="140"/>
+</p>
 
-## Firmware
+Educational toolkit for laboratory sessions in Control Engineering, Industrial Informatics, and Robotics courses.
 
-### Prepare the Arduino IDE
+This repository combines:
+- ESP32/M5Core2 firmware for DC motor control and data acquisition.
+- A Python GUI to configure experiments, run tests, and save results.
+- A serial communication pipeline for real-time monitoring and logging.
 
-Follow the installation steps described in this guide.
+## Project Purpose
 
-1. Install Arduino IDE: Download it from [this link](https://www.arduino.cc/en/software/).
-2. Install the M5Stack board family:
+The project provides a reproducible and practical framework so students can:
+- Configure control modes (`open-loop`, `position`, `velocity`).
+- Run experiments with multiple input signals (`step`, `ramp`, `manual`).
+- Export experiment data for post-processing.
+- Connect control theory with embedded implementation and real measurements.
 
-    <img src="images/board_install_1.png" width="80%"/>
+## System Architecture
 
-    You need to copy/paste this text to download the board package
+The system has three layers:
 
-    ```txt
-    https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json 
-    ```
+1. ESP32/M5Core2 firmware.
+2. Serial communication between PC and ESP32.
+3. Python GUI for operation, visualization, and storage.
 
-    <img src="images/board_install_2.png" width="80%"/>
+```mermaid
+flowchart LR
+    A[Python GUI] -->|JSON config + START/END| B[ESP32 Firmware]
+    B -->|Serial data batches| A
+    A -->|CSV export| C[experiment_data]
+```
 
-    Once the board package address is set, you can install it from the *boards manager*.
-    <img src="images/board_install_3.png" width="80%"/>
+## Repository Structure
 
+```text
+.
+|-- config/
+|   `-- config.json
+|-- experiment_data/
+|   `-- *.csv
+|-- firmware/
+|   `-- firmware.ino
+|-- images/
+|-- dc_motor_gui.py
+|-- send_json.py
+|-- requirements.txt
+`-- README.md
+```
 
-    Once installed, you can select M5Core2 from the board selection menu.
+### Key Components
 
-    <img src="images/board_selection.png" width="100%"/>
+- `config/`
+  - `config.json`: experiment and controller parameters generated and updated from the GUI.
+- `firmware/`
+  - `firmware.ino`: encoder reading, PWM generation, control logic, FreeRTOS tasks, and serial streaming.
+- `dc_motor_gui.py`
+  - Main desktop app to connect, configure, run, stop, visualize, and save experiments.
+- `experiment_data/`
+  - CSV output files generated from experiments.
+- `send_json.py`
+  - Utility script to send JSON configuration over serial.
 
-3. Install the Arduino libraries for M5Core2:
+## Requirements
 
-    <img src="images/m5core2_library.png" width="130%"/>
+### Hardware
 
-    **WARNING:** When you press *Install*, you'll see the list of dependencies. You *MUST* install all the dependencies too.
+- M5Core2 (ESP32)
+- DC motor with encoder
+- Suitable power stage / motor driver
+- USB cable for PC connection
 
+### Software
 
-4. Install the CP2104 driver (USB driver):
+- Arduino IDE
+- Python 3.10+ (recommended)
+- Python dependencies listed in `requirements.txt`
+- CP210x USB driver (if required by your OS)
 
-    - **Windows:** Download it from [this link](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_Windows.zip) 
-    - **MacOS:** Download it from [this link](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_MacOS.zip) if 
-    - **Ubuntu:** Download it from [this link](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_Linux.zip) 
+## Firmware Setup (Detailed)
 
-    More info about USB driver installation [here](https://docs.m5stack.com/en/arduino/m5core2/program#2.usb%20driver%20installation).
+This section keeps the full step-by-step firmware setup flow.
 
-    Now, when you connect the M5Core2 devide to the PC with the USB cable, you can select the port in the Arduino IDE.
+### 1) Install Arduino IDE
 
-    <img src="images/select_serial_port.png" width="80%"/>
+Download and install from:
+https://www.arduino.cc/en/software/
 
-    **WARNING:** 
-        - In windows, the port is called *COMX*, where *X* is a number that can vary from time to time, e.g., *COM5*.
-        - In linux, the port is called "ttyUSBX" or "ttyACMX", where *X* is a number that can vary from time to time, e.g., *ttyUSB2*.
+### 2) Install M5Stack board package
 
-5. Compile and upload the `hello_world.ino` example from *M5Core2* library:
+Add this board manager URL:
 
-    <img src="images/open_hello_world_example.png" width="80%"/>
+```txt
+https://static-cdn.m5stack.com/resource/arduino/package_m5stack_index.json
+```
 
-    You can press the *Upload* (in red) button to compile and load the program to the device. Note that the button on the left (*Verify* - in green) compiles the program but doesn't upload it to the device.
+<img src="images/board_install_1.png" width="80%"/>
+<img src="images/board_install_2.png" width="80%"/>
+<img src="images/board_install_3.png" width="80%"/>
 
-    <img src="images/compile.png" width="80%"/>
+After installation, select the M5Core2 board:
 
-6. *OPTIONAL:* You can open other examples if you want to see the potential of M5Core2. You can try this one:
+<img src="images/board_selection.png" width="100%"/>
 
-    <img src="images/open_floppybird_example.png" width="80%"/>
+### 3) Install required Arduino libraries
 
+Install M5Core2-related libraries and all dependencies.
 
-    **Additional resources:**  [Here](https://docs.m5stack.com/en/core/core2) you can find more documentation about some of the basic functions of M5Core2.  
+<img src="images/m5core2_library.png" width="130%"/>
 
-**Pinout and Important Notes**
-Below is the M5Core2 pinout. The pins marked in red are the ones used in the DC Motor
+Important:
+- When prompted, install all dependent libraries too.
+
+### 4) Install CP210x USB driver
+
+- Windows: https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_Windows.zip
+- macOS: https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_MacOS.zip
+- Linux: https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/drivers/CP210x_VCP_Linux.zip
+
+Additional reference:
+https://docs.m5stack.com/en/arduino/m5core2/program#2.usb%20driver%20installation
+
+Port selection example:
+
+<img src="images/select_serial_port.png" width="80%"/>
+
+Notes:
+- On Windows, the port is usually `COMx` (for example, `COM5`).
+- On Linux, it is usually `ttyUSBx` or `ttyACMx`.
+
+### 5) Verify toolchain with an example sketch (recommended)
+
+Compile and upload the `hello_world.ino` example from the M5Core2 library first.
+
+<img src="images/open_hello_world_example.png" width="80%"/>
+<img src="images/compile.png" width="80%"/>
+
+### 6) Upload this project firmware
+
+1. Open `firmware/firmware.ino`.
+2. Select board and serial port.
+3. Compile and upload.
+4. Open Serial Monitor and verify the `READY` message appears.
+
+### Pinout and important notes
+
+Below is the M5Core2 pinout (the red pins are used in this project):
 
 <img src="images/pinout_M5Core2.png" width="30%"/>
 
-!!! warning
-    - Some *pins* on the M5Core2 are preconfigured, so pay attention when connecting external components.
-    - The ESP32 inside the M5Core2 has 3 serial ports:
-          - `Serial1` is reserved for the display (do not use it).
-          - `Serial0` can be configured (pins `G3 – RXD0` and `G1 – TXD0`), but it is reserved for USB connection to the PC.
-          - `Serial2` is free and can be configured (pins `G13 – RXD2` and `G14 – TXD2`) as regular GPIO using `pinMode()`.
+Warnings:
+- Some M5Core2 pins are preconfigured, so verify wiring carefully.
+- ESP32 serial ports:
+  - `Serial1` is reserved for the display.
+  - `Serial0` is used for USB communication to the PC.
+  - `Serial2` is available for general use.
 
-## Software
+## GUI Setup
 
-### Install requirements
-Install the python requirements for the GUI:
+Install Python dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### Create a .exe (for windows)
+Run the GUI:
 
-Install `pyinstaller`
+```bash
+python dc_motor_gui.py
+```
+
+## How To Use
+
+Recommended experiment workflow:
+
+1. Connect the board and open the GUI.
+2. Select serial port and baud rate.
+3. Click `Connect`.
+4. Configure:
+   - `control_mode`: `open-loop`, `position`, `velocity`
+   - `input_signal`: `step`, `ramp`, `manual`
+   - PID gains (`Kp`, `Ki`, `Kd`) when applicable
+   - `experiment_duration` and `sampling_rate`
+5. Click `Send Config`.
+6. Click `Start Experiment`.
+7. Click `Stop` at any time to end the run.
+8. Click `Save` to export collected data to CSV.
+
+Note:
+- `Stop` halts the experiment without clearing in-memory data, so saving afterward is supported.
+- `config/config.json` is edited through the GUI controls and `Send Config`; manual file editing is not required.
+
+## Configuration File (`config/config.json`)
+
+This file is managed directly from the GUI. In normal usage, you should configure parameters in the application and click `Send Config`; manual editing is optional and generally unnecessary.
+
+Common fields:
+- `control_mode`
+- `input_signal`
+- `ref`
+- `Kp`, `Ki`, `Kd`
+- `experiment_duration`
+- `sampling_rate`
+- `dead_zone_compensation`
+
+Example:
+
+```json
+{
+  "control_mode": "position",
+  "input_signal": "step",
+  "ref": 0.0,
+  "Kp": 1.0,
+  "Ki": 0.0,
+  "Kd": 0.0,
+  "experiment_duration": 10.0,
+  "sampling_rate": 0.01,
+  "dead_zone_compensation": true
+}
+```
+
+## Experiment Data
+
+Results are stored in `experiment_data/` as CSV files, ready for analysis in Python, MATLAB/Octave, or Excel.
+
+Expected CSV columns:
+- `voltage`
+- `pos_rad`
+- `vel_rad_per_s`
+- `vel_filtered_rad_per_s`
+- `ref`
+- `time_ms`
+
+## Educational Use Cases
+
+This repository is intended for lab sessions and project-based learning in:
+- Control engineering
+- Industrial informatics
+- Robotics
+
+Suggested academic activities:
+- Compare open-loop and closed-loop behavior.
+- Tune PID controllers and evaluate transient response.
+- Analyze the effect of sampling time and velocity filtering.
+- Build end-to-end traceability from control command to stored dataset.
+
+## Optional: Build a Windows Executable
 
 ```bash
 pip install pyinstaller
+pyinstaller --onefile -w dc_motor_gui.py
 ```
 
-Generate the .exe file
-
-First, go to where the .py file is, and then:
-
-```bash
-pyinstaller --onefile -w data_collection_gui.py
-```
-
-Once finished, the application file is inside the `dist` folder.
+The executable will be generated in `dist/`.
