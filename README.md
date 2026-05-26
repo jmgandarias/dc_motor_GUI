@@ -1,4 +1,4 @@
-# DC Open-source, portable, and low-cost educational kit for engineering control courses
+# Open-source, portable, and low-cost educational kit for engineering control courses
 
 <img src="images/icon.svg" alt="DC Motor GUI logo" width="140"/>
 
