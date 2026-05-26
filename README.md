@@ -10,6 +10,21 @@
 [![Downloads](https://img.shields.io/github/downloads/jmgandarias/dc_motor_GUI/total?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/releases)
 [![Repository views](https://komarev.com/ghpvc/?username=jmgandarias&repo=dc_motor_GUI&style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI)
 
+## Table of Contents
+
+- [Project Purpose](#project-purpose)
+- [System Architecture](#system-architecture)
+- [Repository Structure](#repository-structure)
+- [Requirements](#requirements)
+- [Hardware Description](#hardware-description)
+- [Firmware Setup](#firmware-setup-detailed)
+- [GUI Setup](#gui-setup)
+- [How To Use](#how-to-use)
+- [Configuration File](#configuration-file-configconfigjson)
+- [Experiment Data](#experiment-data)
+- [Educational Use Cases](#educational-use-cases)
+- [Optional: Build a Windows Executable](#optional-build-a-windows-executable)
+
 This repository combines:
 - ESP32/M5Core2 firmware for DC motor control and data acquisition.
 - A Python GUI to configure experiments, run tests, and save results.
