@@ -7,7 +7,6 @@
 [![GitHub forks](https://img.shields.io/github/forks/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/network/members)
 [![GitHub issues](https://img.shields.io/github/issues/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/issues)
 [![License](https://img.shields.io/github/license/jmgandarias/dc_motor_GUI?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/blob/main/LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/jmgandarias/dc_motor_GUI/total?style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI/releases)
 [![Repository views](https://komarev.com/ghpvc/?username=jmgandarias&repo=dc_motor_GUI&style=flat-square)](https://github.com/jmgandarias/dc_motor_GUI)
 
 ## Table of Contents
@@ -115,8 +114,7 @@ Main hardware blocks:
 - Power stage: external 12 V supply and L298N H-bridge for motor actuation.
 - Control and acquisition: ESP32/M5Core2 running the firmware.
 - Integration elements: prototyping board, DC jack input, and dedicated ON/OFF switch.
-- Mechanical parts: [base](https://cad.onshape.com/documents/68744c2d9d57a115c5be415b/w/ec99c6ff019e2c161f3202af/e/f19522d12bc2ccb0db4a4fea) and [wheel](https://cad.onshape.com/documents/8acf9963d988a95b0fc5bd3a/w/932db805f70a48a786458306/e/d399924528139fa77ffa1802) CAD files are publicly available.
-- The CAD base is designed for the M5Core2-based assembly.
+- Mechanical parts: [M5Core2 base](https://cad.onshape.com/documents/68744c2d9d57a115c5be415b/w/ec99c6ff019e2c161f3202af/e/f19522d12bc2ccb0db4a4fea), [ESP32 base](https://cad.onshape.com/documents/6c67ce6d6d4e0b85aa1cfb27/w/583f68954b355411b250780e/e/1a8a1064b83fca61429e0501) and [wheel](https://cad.onshape.com/documents/8acf9963d988a95b0fc5bd3a/w/932db805f70a48a786458306/e/d399924528139fa77ffa1802) CAD files are publicly available.
 
 ### Simplified Wiring (Hardware Setup)
 
